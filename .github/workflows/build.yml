@@ -18,10 +18,12 @@ jobs:
 
       - name: Prepare OpenWrt SDK
         run: |
-          # 下载 OpenWrt 21.02 SDK (使用 x86_64 版本以加快编译速度，生成的包是通用的)
+          # 下载 OpenWrt 21.02 SDK
           wget https://downloads.openwrt.org/releases/21.02.1/targets/x86/64/openwrt-sdk-21.02.1-x86-64_gcc-8.4.0_musl.Linux-x86_64.tar.xz
-          tar -xf openwrt-sdk-*.tar.xz
-          mv openwrt-sdk-* sdk
+          
+          # 创建 sdk 目录并解压（自动去除第一层目录名，防止版本号变化导致路径错误）
+          mkdir sdk
+          tar -xf openwrt-sdk-*.tar.xz --strip-components=1 -C sdk
 
       - name: Prepare Package
         run: |
