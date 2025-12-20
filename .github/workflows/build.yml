@@ -21,7 +21,7 @@ jobs:
           # 安装编译所需的依赖 (Python 3 等)
           sudo apt-get update
           sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
-            zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip python3 python3-distutils
+            zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip python3 python3-setuptools
 
           # 下载 OpenWrt 21.02 SDK
           wget https://downloads.openwrt.org/releases/21.02.1/targets/x86/64/openwrt-sdk-21.02.1-x86-64_gcc-8.4.0_musl.Linux-x86_64.tar.xz
