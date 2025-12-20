@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Prepare OpenWrt SDK
         run: |
@@ -44,7 +44,7 @@ jobs:
           make package/luci-app-chongyoung/compile V=s
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: luci-app-chongyoung-ipk
           path: sdk/bin/packages/*/base/*.ipk
