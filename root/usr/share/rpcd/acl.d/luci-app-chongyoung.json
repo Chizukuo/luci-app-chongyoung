@@ -1,0 +1,11 @@
+{
+	"luci-app-chongyoung": {
+		"description": "Grant UCI access for luci-app-chongyoung",
+		"read": {
+			"uci": [ "chongyoung" ]
+		},
+		"write": {
+			"uci": [ "chongyoung" ]
+		}
+	}
+}

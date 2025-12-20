@@ -1,0 +1,60 @@
+name: Build OpenWrt Package
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Prepare OpenWrt SDK
+        run: |
+          # 下载 OpenWrt 21.02 SDK (使用 x86_64 版本以加快编译速度，生成的包是通用的)
+          wget https://downloads.openwrt.org/releases/21.02.1/targets/x86/64/openwrt-sdk-21.02.1-x86-64_gcc-8.4.0_musl.Linux-x86_64.tar.xz
+          tar -xf openwrt-sdk-*.tar.xz
+          mv openwrt-sdk-* sdk
+
+      - name: Prepare Package
+        run: |
+          # 将当前源码复制到 SDK 的 package 目录下
+          mkdir -p sdk/package/luci-app-chongyoung
+          rsync -av --exclude='sdk' --exclude='.git' --exclude='.github' . sdk/package/luci-app-chongyoung/
+
+      - name: Compile
+        run: |
+          cd sdk
+          # 更新 feeds 以获取依赖 (luci, curl 等)
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
+          # 生成默认配置
+          make defconfig
+          
+          # 编译我们的包
+          # V=s 显示详细日志，便于排错
+          make package/luci-app-chongyoung/compile V=s
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: luci-app-chongyoung-ipk
+          path: sdk/bin/packages/*/base/*.ipk
+
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: sdk/bin/packages/*/base/*.ipk
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true

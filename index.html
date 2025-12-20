@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>校园网每日密码生成器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        textarea { font-family: 'Roboto Mono', monospace; }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+    <div class="w-full max-w-2xl mx-auto bg-white rounded-xl shadow-lg p-6 md:p-8">
+        <div class="text-center mb-6">
+            <h1 class="text-2xl md:text-3xl font-bold text-gray-800">校园网每日密码生成器</h1>
+            <p class="text-gray-500 mt-2">输入6位原始密码，生成并复制31天的加密密码。</p>
+        </div>
+        <div class="space-y-4">
+            <div>
+                <label for="basePassword" class="block text-sm font-medium text-gray-700">6位原始密码</label>
+                <input type="text" id="basePassword" maxlength="6" class="mt-1 block w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition" placeholder="例如: 123456">
+            </div>
+            <button id="generateBtn" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-transform transform hover:scale-105 active:scale-100 shadow-md">
+                生成密码
+            </button>
+        </div>
+        <div id="result-container" class="mt-6 hidden">
+            <div class="flex justify-between items-center mb-2">
+                 <label for="passwords" class="block text-sm font-medium text-gray-700">生成的密码 (共31个)</label>
+                 <button id="copyBtn" class="px-4 py-2 bg-green-500 text-white text-sm font-semibold rounded-md hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-all">
+                    一键复制
+                </button>
+            </div>
+            <textarea id="passwords" readonly rows="15" class="w-full p-3 font-mono text-sm bg-gray-900 text-green-300 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+            <p id="copy-feedback" class="text-sm text-green-600 font-semibold mt-2 h-4"></p>
+        </div>
+    </div>
+    <script>
+        const data1={1:'5084972163',2:'9801567243',3:'7286059143',4:'1850394726',5:'1462578093',6:'5042936178',7:'0145937682',8:'0964238571',9:'3497651802',10:'9125780643',11:'8634972150',12:'5924673801',13:'8274053169',14:'5841792063',15:'2469385701',16:'8205349671',17:'7429516038',18:'3769458021',19:'5862370914',20:'8529364170',21:'7936082154',22:'5786241930',23:'0728643951',24:'9418360257',25:'5093287146',26:'5647830192',27:'3986145207',28:'0942587136',29:'4357069128',30:'0956723814',31:'1502796384'};
+        function pythonModulo(n,m){return((n%m)+m)%m}
+        function getDateToken(day){const word=data1[day];const word_len=word.length;const wordbyte=word.split('').map(Number);const token=Array.from({length:256},(_,i)=>i<128?i:i-256);let index=0;for(let i=0;i<256;i++){index+=token[i]+wordbyte[i%word_len];index=pythonModulo(index,256);[token[i],token[index]]=[token[index],token[i]]}return token}
+        function getPasswd(passwd,day){const passwdbyte=passwd.split('').map(c=>c.charCodeAt(0));const ps_len=passwd.length;const passwd_token=new Array(ps_len);const date_token=getDateToken(day);let index1=0;let index2=0;for(let i=0;i<ps_len;i++){index1=(index1+1)%256;const token1_val=pythonModulo(date_token[index1],256);index2=(index2+token1_val)%256;[date_token[index1],date_token[index2]]=[date_token[index2],date_token[index1]];const new_token1_val=pythonModulo(date_token[index1],256);const new_token2_val=pythonModulo(date_token[index2],256);const index=(new_token1_val+new_token2_val)%256;const final_token_val=pythonModulo(date_token[index],256);passwd_token[i]=(final_token_val^passwdbyte[i])}
+        const hexString=passwd_token.map(b=>b.toString(16).padStart(2,'0')).join('');const wordArray=CryptoJS.enc.Hex.parse(hexString);const hash=CryptoJS.MD5(wordArray).toString(CryptoJS.enc.Hex);return hash.substring(8,24)}
+        const generateBtn=document.getElementById('generateBtn');const copyBtn=document.getElementById('copyBtn');const basePasswordInput=document.getElementById('basePassword');const passwordsTextarea=document.getElementById('passwords');const resultContainer=document.getElementById('result-container');const copyFeedback=document.getElementById('copy-feedback');
+        generateBtn.addEventListener('click',()=>{const basePassword=basePasswordInput.value;if(basePassword.length!==6){alert('请输入6位原始密码。');return}
+        let allPasswords=[];for(let i=1;i<=31;i++){allPasswords.push(getPasswd(basePassword,i))}
+        passwordsTextarea.value=allPasswords.join('\n');resultContainer.classList.remove('hidden')});
+        copyBtn.addEventListener('click',()=>{passwordsTextarea.select();document.execCommand('copy');copyFeedback.textContent='已复制到剪贴板!';setTimeout(()=>{copyFeedback.textContent=''},2000)});
+        basePasswordInput.addEventListener('keyup',(event)=>{if(event.key==='Enter'){generateBtn.click()}});
+    </script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+/bin/
+/obj/
+/tmp/
+*.ipk
+.vscode/
+.DS_Store
