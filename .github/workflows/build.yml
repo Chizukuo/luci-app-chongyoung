@@ -70,14 +70,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-chongyoung-ipk
-          path: sdk/bin/packages/*/base/*.ipk
+          path: sdk/bin/packages/*/base/luci-app-chongyoung*.ipk
 
       - name: Upload to Release
         if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: sdk/bin/packages/*/base/*.ipk
+          file: sdk/bin/packages/*/base/luci-app-chongyoung*.ipk
           tag: ${{ github.ref }}
           overwrite: true
           file_glob: true
