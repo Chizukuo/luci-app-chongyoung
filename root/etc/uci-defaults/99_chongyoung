@@ -8,23 +8,28 @@ fi
 
 # 合并 opkg 备份的配置文件（如果存在）
 if [ -f /etc/config/chongyoung-opkg ]; then
-    # 临时导出旧配置
-    OLD_ENABLED=$(awk -F"'" '/option enabled/{print $2}' /etc/config/chongyoung-opkg | head -n1)
-    OLD_USERNAME=$(awk -F"'" '/option username/{print $2}' /etc/config/chongyoung-opkg | head -n1)
+    # 临时重命名以便 uci 工具识别（uci 不支持带连字符的文件名作为配置名）
+    mv /etc/config/chongyoung-opkg /etc/config/chongyoung_backup
     
-    # 提取密码列表（多行文本）
-    if grep -q "option password_list" /etc/config/chongyoung-opkg; then
-        OLD_PASSWORDS=$(sed -n "/option password_list/,/^[[:space:]]*$/p" /etc/config/chongyoung-opkg | grep -v "option password_list" | tr -d "'" | sed '/^$/d')
-    fi
+    # 使用 uci 读取旧配置，完美支持多行值
+    OLD_ENABLED=$(uci -q get chongyoung_backup.general.enabled)
+    OLD_USERNAME=$(uci -q get chongyoung_backup.general.username)
+    OLD_PWD_LIST=$(uci -q get chongyoung_backup.daily.password_list)
     
     # 恢复到新配置中
     [ -n "$OLD_ENABLED" ] && uci set chongyoung.general.enabled="$OLD_ENABLED"
     [ -n "$OLD_USERNAME" ] && uci set chongyoung.general.username="$OLD_USERNAME"
-    [ -n "$OLD_PASSWORDS" ] && uci set chongyoung.daily.password_list="$OLD_PASSWORDS"
+    [ -n "$OLD_PWD_LIST" ] && uci set chongyoung.daily.password_list="$OLD_PWD_LIST"
     
     uci commit chongyoung
-    rm -f /etc/config/chongyoung-opkg
+    
+    # 清理临时文件
+    rm -f /etc/config/chongyoung_backup
 fi
+
+# 确保脚本有执行权限（虽然 opkg 会处理，但以防万一）
+chmod +x /usr/bin/chongyoung.sh
+chmod +x /usr/share/chongyoung/calc_pwd.lua
 
 /etc/init.d/rpcd reload
 /etc/init.d/chongyoung enable

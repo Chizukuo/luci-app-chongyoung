@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-chongyoung
 PKG_VERSION:=1.7
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 PKG_MAINTAINER:=chizukuo <chizukuo@icloud.com>
 PKG_LICENSE:=MIT

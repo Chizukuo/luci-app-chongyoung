@@ -68,7 +68,11 @@ login() {
     
     # 提取日期 (例如 21)
     # 使用 awk 替代 cut/sed 以提高兼容性
-    da检查缓存
+    day_num=$(echo "$AidcAuthAttr1" | awk '{print substr($0, 7, 2)}' | awk '{print int($0)}')
+    
+    passwd=""
+    
+    # 检查缓存
     if [ "$day_num" = "$CACHE_DAY" ] && [ -n "$CACHE_PWD" ]; then
         passwd="$CACHE_PWD"
         # log "使用缓存密码 (日期: $day_num)"
@@ -76,10 +80,13 @@ login() {
         # 优先使用种子计算密码
         if [ -n "$password_seed" ]; then
             if [ -x "/usr/share/chongyoung/calc_pwd.lua" ]; then
-                passwd=$(/usr/share/chongyoung/calc_pwd.lua "$password_seed" "$day_num")
-                if [ -z "$passwd" ]; then
+                # 捕获输出并检查退出状态
+                calc_out=$(/usr/share/chongyoung/calc_pwd.lua "$password_seed" "$day_num")
+                if [ $? -eq 0 ] && [ -n "$calc_out" ]; then
+                    passwd="$calc_out"
+                else
                     log "密码计算失败"
-                    return 1
+                    # 不立即返回，尝试回退到列表模式
                 fi
             else
                 log "找不到密码计算脚本"
@@ -89,7 +96,6 @@ login() {
         # 如果没有计算出密码（未设置种子或计算失败），尝试从列表读取
         if [ -z "$passwd" ]; then
             # 从 password_list 中提取对应行的密码
-            # sed -n "${day_num}p" 输出第 day_num 行
             password_list=$(uci -q get chongyoung.daily.password_list)
             
             # 确保 password_list 不为空
@@ -106,10 +112,6 @@ login() {
             CACHE_DAY="$day_num"
             CACHE_PWD="$passwd"
         fi
-            return 1
-        fi
-
-        passwd=$(echo "$password_list" | sed -n "${day_num}p" | tr -d '\r')
     fi
     
     if [ -z "$passwd" ]; then
