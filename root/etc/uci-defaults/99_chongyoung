@@ -1,5 +1,33 @@
 #!/bin/sh
+
+# 配置迁移：添加新增的配置项
+if ! uci -q get chongyoung.general.password_seed >/dev/null; then
+    uci set chongyoung.general.password_seed=''
+    uci commit chongyoung
+fi
+
+# 合并 opkg 备份的配置文件（如果存在）
+if [ -f /etc/config/chongyoung-opkg ]; then
+    # 临时导出旧配置
+    OLD_ENABLED=$(awk -F"'" '/option enabled/{print $2}' /etc/config/chongyoung-opkg | head -n1)
+    OLD_USERNAME=$(awk -F"'" '/option username/{print $2}' /etc/config/chongyoung-opkg | head -n1)
+    
+    # 提取密码列表（多行文本）
+    if grep -q "option password_list" /etc/config/chongyoung-opkg; then
+        OLD_PASSWORDS=$(sed -n "/option password_list/,/^[[:space:]]*$/p" /etc/config/chongyoung-opkg | grep -v "option password_list" | tr -d "'" | sed '/^$/d')
+    fi
+    
+    # 恢复到新配置中
+    [ -n "$OLD_ENABLED" ] && uci set chongyoung.general.enabled="$OLD_ENABLED"
+    [ -n "$OLD_USERNAME" ] && uci set chongyoung.general.username="$OLD_USERNAME"
+    [ -n "$OLD_PASSWORDS" ] && uci set chongyoung.daily.password_list="$OLD_PASSWORDS"
+    
+    uci commit chongyoung
+    rm -f /etc/config/chongyoung-opkg
+fi
+
 /etc/init.d/rpcd reload
 /etc/init.d/chongyoung enable
 /etc/init.d/chongyoung restart
+
 exit 0
