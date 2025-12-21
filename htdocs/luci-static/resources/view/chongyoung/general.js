@@ -4,6 +4,14 @@
 'require ui';
 'require fs';
 'require poll';
+'require rpc';
+
+var callInitAction = rpc.declare({
+	object: 'luci',
+	method: 'setInitAction',
+	params: [ 'name', 'action' ],
+	expect: { result: false }
+});
 
 return view.extend({
 	render: function() {
@@ -36,8 +44,12 @@ return view.extend({
 		o.inputtitle = _('Restart Service');
 		o.inputstyle = 'apply';
 		o.onclick = function() {
-			return fs.exec('/etc/init.d/chongyoung', ['restart']).then(function() {
-				ui.addNotification(null, E('p', _('Service restarted successfully. Please wait for status update.')), 'info');
+			return callInitAction('chongyoung', 'restart').then(function(result) {
+				if (result) {
+					ui.addNotification(null, E('p', _('Service restarted successfully. Please wait for status update.')), 'info');
+				} else {
+					ui.addNotification(null, E('p', _('Failed to restart service.')), 'error');
+				}
 			}).catch(function(e) {
 				ui.addNotification(null, E('p', _('Failed to restart service: ') + e.message), 'error');
 			});
@@ -153,7 +165,7 @@ return view.extend({
 				E('span', {}, _('Project hosted on ')),
 				E('a', { 'href': 'https://github.com/Chizukuo/luci-app-chongyoung', 'target': '_blank', 'style': 'color: #0069b4; text-decoration: none; font-weight: bold;' }, 'GitHub'),
 				E('span', {}, ' | '),
-				E('span', {}, 'v1.8.2')
+				E('span', {}, 'v1.8.3')
 			]);
 			nodes.appendChild(footer);
 			return nodes;

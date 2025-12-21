@@ -4,14 +4,15 @@
 		"read": {
 			"uci": [ "chongyoung" ],
 			"file": {
-				"/tmp/chongyoung_status": [ "read" ]
+				"/tmp/chongyoung_status": [ "read" ],
+				"/etc/init.d/chongyoung": [ "exec" ]
 			}
 		},
 		"write": {
-			"uci": [ "chongyoung" ]
-		},
-		"exec": {
-			"/etc/init.d/chongyoung": [ "restart" ]
+			"uci": [ "chongyoung" ],
+			"file": {
+				"/etc/init.d/chongyoung": [ "exec" ]
+			}
 		}
 	}
 }

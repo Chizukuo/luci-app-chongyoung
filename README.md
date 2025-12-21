@@ -22,8 +22,7 @@ OpenWrt LuCI support for FeiYoung Campus Network Auto Login.
 
 本插件提供不同版本以适应不同需求，请按需选择：
 
-- **v1.8.2+ (推荐)**: 功能最全，支持本地自动算号、计划休眠、断网控制、仪表盘组件等高级功能。
-- **v1.7.4**: 持本地自动算号。
+- **v1.8.3 (推荐)**: 功能最全，支持本地自动算号、计划休眠、断网控制、仪表盘组件等高级功能。
 - **v1.6.0**: 仅保留核心登录功能，需手动粘贴密码列表。代码量更少，体积极致轻量，适合存储空间极度受限的设备。
 
 ## 📦 安装方法
@@ -37,7 +36,7 @@ OpenWrt LuCI support for FeiYoung Campus Network Auto Login.
 1. 将本仓库克隆到 OpenWrt SDK 的 `package/` 目录下：
    ```bash
    cd package/
-   git clone https://github.com/your-username/luci-app-chongyoung.git
+   git clone https://github.com/Chizukuo/luci-app-chongyoung.git
    ```
 2. 运行 `make menuconfig`，在 `LuCI` -> `3. Applications` 中选中 `luci-app-chongyoung`。
 3. 编译固件或单独编译 IPK 包：
@@ -109,12 +108,15 @@ logread -f -e chongyoung
 
 ### 版本历史
 
-**v1.7.4** (2025-12-21) - 本地自动算号与稳定性大幅提升
+**v1.8.3** (2025-12-21) - 本地自动算号与稳定性大幅提升
 - ✨ 新增内置自动算号功能，仅需 6 位原始密码
 - ✨ 智能降级机制：计算失败自动切换至密码列表
+- ✨ 新增计划休眠功能，支持定时断开 WAN 接口
 - 🚀 密码缓存优化，显著降低 CPU 占用
 - 🛡️ 网络超时控制防止进程卡死
 - 🔧 配置无缝迁移，升级时自动保留用户设置
+- 🔧 高级超时配置，支持自定义连接和总超时时间
+- 🐛 修复脚本 CRLF 换行符问题，提升系统兼容性
 - 🐛 修复脚本语法错误，提升进程稳定性
 
 更早的版本历史请参考 [Releases](../../releases) 页面。
@@ -126,8 +128,11 @@ logread -f -e chongyoung
 ├── index.html                      # 密码生成工具 (Web 界面)
 ├── README.md                       # 项目说明
 ├── htdocs/                         # Web 界面文件
-│   └── luci-static/resources/view/chongyoung/
-│       └── general.js              # LuCI 配置界面
+│   └── luci-static/resources/view/
+│       ├── chongyoung/
+│       │   └── general.js          # LuCI 配置界面
+│       └── status/include/
+│           └── 10_chongyoung.js    # 状态页仪表盘组件
 ├── luasrc/                         # Lua 控制层
 │   └── controller/chongyoung.lua   # LuCI 路由器
 ├── root/                           # 系统集成文件
