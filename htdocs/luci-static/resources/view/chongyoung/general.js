@@ -2,12 +2,47 @@
 'require view';
 'require form';
 'require ui';
+'require fs';
+'require poll';
 
 return view.extend({
 	render: function() {
 		var m, s, o;
 
 		m = new form.Map('chongyoung', _('ChongYoung Network'), _('Configuration for ChongYoung Campus Network Auto Login'));
+
+		s = m.section(form.TypedSection, 'global', _('Status'));
+		s.anonymous = true;
+		
+		o = s.option(form.DummyValue, '_status', _('Current Status'));
+		o.rawhtml = true;
+		o.default = '<em>' + _('Collecting data...') + '</em>';
+		o.cfgvalue = function(section_id) {
+			return fs.read('/tmp/chongyoung_status').then(function(status) {
+				status = status ? status.trim() : _('Not Running');
+				var color = 'green';
+				if (status.indexOf('重连') !== -1 || status.indexOf('失败') !== -1) {
+					color = 'red';
+				}
+				return '<span style="color:' + color + '; font-weight:bold">' + status + '</span>';
+			}).catch(function() {
+				return '<span style="color:grey">' + _('Not Running') + '</span>';
+			});
+		};
+		
+		poll.add(function() {
+			return fs.read('/tmp/chongyoung_status').then(function(status) {
+				var view = document.getElementById('cbi-chongyoung-global-_status');
+				if (view) {
+					status = status ? status.trim() : _('Not Running');
+					var color = 'green';
+					if (status.indexOf('重连') !== -1 || status.indexOf('失败') !== -1) {
+						color = 'red';
+					}
+					view.innerHTML = '<div class="cbi-value-field"><span style="color:' + color + '; font-weight:bold">' + status + '</span></div>';
+				}
+			});
+		});
 
 		s = m.section(form.TypedSection, 'global', _('General Settings'));
 		s.anonymous = true;
@@ -34,7 +69,7 @@ return view.extend({
 			return true;
 		};
 
-		s = m.section(form.TypedSection, 'global', _('Advanced Settings'), _('System parameters from edition.ini'));
+		s = m.section(form.TypedSection, 'global', _('Advanced Settings'), _('System parameters from edition.ini') + '<br /><span style="color:red; font-weight:bold">' + _('WARNING: Do not modify unless you know what you are doing!') + '</span>');
 		s.anonymous = true;
 		s.collapsible = true;
 		s.collapsed = true;

@@ -5,6 +5,11 @@ log() {
     logger -t chongyoung "$1"
 }
 
+# 更新状态文件
+update_status() {
+    echo "$1" > /tmp/chongyoung_status
+}
+
 # 读取UCI配置
 get_config() {
     enabled=$(uci -q get chongyoung.general.enabled)
@@ -83,14 +88,18 @@ main() {
     get_config
     
     while true; do
-        # 状态检测
-        if ping -c 1 -W 2 114.114.114.114 >/dev/null 2>&1; then
+        # 状态检测 - 尝试 Ping 阿里DNS(223.5.5.5) 或 腾讯DNS(119.29.29.29)
+        if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 || ping -c 1 -W 2 119.29.29.29 >/dev/null 2>&1; then
             # log "网络正常，发送心跳"
+            update_status "运行中 - 网络正常"
             heart
         else
             log "网络断开，开始重连"
+            update_status "运行中 - 正在重连..."
             if init_network; then
                 login
+            else
+                update_status "运行中 - 连接认证服务器失败"
             fi
         fi
         
