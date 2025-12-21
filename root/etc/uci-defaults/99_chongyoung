@@ -1,0 +1,5 @@
+#!/bin/sh
+/etc/init.d/rpcd reload
+/etc/init.d/chongyoung enable
+/etc/init.d/chongyoung restart
+exit 0

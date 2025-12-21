@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-chongyoung
-PKG_VERSION:=1.6
+PKG_VERSION:=1.7
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=chizukuo <chizukuo@icloud.com>
@@ -16,6 +16,11 @@ define Package/luci-app-chongyoung
   TITLE:=LuCI support for ChongYoung Campus Network
   PKGARCH:=all
   DEPENDS:=+curl
+  PKG_CONFIG_DEPENDS:=CONFIG_PACKAGE_luci-app-chongyoung
+endef
+
+define Package/luci-app-chongyoung/conffiles
+/etc/config/chongyoung
 endef
 
 define Package/luci-app-chongyoung/description
@@ -43,12 +48,9 @@ define Package/luci-app-chongyoung/install
 	
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/chongyoung
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/chongyoung/general.js $(1)/www/luci-static/resources/view/chongyoung/general.js
-endef
 
-define Package/luci-app-chongyoung/postinst
-#!/bin/sh
-[ -n "$${IPKG_INSTROOT}" ] || { /etc/init.d/rpcd reload; /etc/init.d/chongyoung enable; /etc/init.d/chongyoung restart; }
-exit 0
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./root/etc/uci-defaults/99_chongyoung $(1)/etc/uci-defaults/99_chongyoung
 endef
 
 $(eval $(call BuildPackage,luci-app-chongyoung))
