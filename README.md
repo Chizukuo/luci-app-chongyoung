@@ -3,16 +3,19 @@
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-21.02%2B-blue.svg)](https://openwrt.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-OpenWrt LuCI support for ChongYoung Campus Network Auto Login.
-专为崇扬校园网设计的 OpenWrt 自动登录插件，提供图形化配置界面与稳定的守护进程。
+OpenWrt LuCI support for FeiYoung Campus Network Auto Login.
+专为飞扬校园网设计的 OpenWrt 自动登录插件，提供图形化配置界面与稳定的守护进程。
 
 ## ✨ 功能特点
 
+- **🔐 本地自动算号** (v1.7.4+): 仅需输入 6 位原始密码，插件自动计算每日密码。彻底告别手动生成 31 行密码的繁琐操作！
+- **⚡ 智能降级机制**: 支持将 31 天密码列表作为备用方案。若自动计算失败，脚本自动切换至列表模式，确保登录可靠。
 - **零依赖**: 纯 Shell 脚本核心，无需 Python/Node.js，仅依赖系统自带的 `curl`。
 - **LuCI 集成**: 原生 OpenWrt 界面风格，支持 Argon 等第三方主题。
 - **智能守护**: 集成 Procd 进程守护，开机自启，崩溃自动重启。
 - **断线重连**: 内置网络状态检测与心跳保活机制，实现 7x24 小时在线。
-- **便捷配置**: 支持一键粘贴 31 天密码列表，自动匹配日期登录。
+- **性能优化**: 密码缓存机制降低 CPU 占用；严格的网络超时控制防止进程卡死。
+- **无缝升级**: 升级时自动保留用户配置，无需重新设置手机号或密码。
 - **低资源占用**: 内存占用极低，日志自动轮转，不占用路由器存储空间。
 
 ## 📦 安装方法
@@ -47,24 +50,26 @@ OpenWrt LuCI support for ChongYoung Campus Network Auto Login.
 
 ## 📖 使用指南
 
-### 第一步：生成密码
-1. 在电脑浏览器中打开项目根目录下的 `index.html` 文件。
-2. 输入你的 **6位原始密码**。
-3. 点击 **生成密码**，然后点击 **一键复制**。
+### 推荐方式：仅需 6 位原始密码 (v1.7.4+)
+这是最便捷的方式，只需一次性配置，无需每月更新。
 
-### 第二步：配置插件
 1. 登录路由器 OpenWrt 后台。
 2. 进入菜单：`服务 (Services)` -> `ChongYoung Network`。
 3. **基本设置**:
    - 勾选 `启用 (Enable)`。
    - 输入 `手机号 (Phone Number)`。
-4. **密码设置**:
-   - 在 `每日密码 (Daily Passwords)` 区域的文本框中，直接 **粘贴** 刚才复制的 31 行密码。
-5. 点击右下角的 `保存并应用 (Save & Apply)`。
+   - 输入 `密码种子 (Password Seed)` —— **你的 6 位原始密码（默认身份证后六位）**。
+4. 点击右下角的 `保存并应用 (Save & Apply)` 即可。
 
-## 🔍 故障排查
+**就这么简单！** 路由器将自动计算每日密码，无需进一步操作。
 
-如果遇到无法登录的情况，请通过 SSH 登录路由器查看日志：
+---
+
+### 备用方式：使用 31 天密码列表
+
+### 日志查看
+
+若遇到无法登录的情况，请通过 SSH 登录路由器查看日志：
 
 ```bash
 # 查看最近的日志
@@ -74,25 +79,65 @@ logread -e chongyoung
 logread -f -e chongyoung
 ```
 
-**常见日志说明**:
+### 常见日志说明
+
 - `网络断开，开始重连`: 检测到无法 ping 通外网，正在尝试重新认证。
-- `登录结果: ...`: 显示服务器返回的认证结果。
-- `未找到第 XX 天的密码`: 请检查密码列表是否完整填写了 31 行。
+- `登录结果: 50：认证成功`: 成功登录到校园网。
+- `密码计算失败`: 密码种子有误或计算脚本缺失，请检查配置或升级到最新版本。
+- `未找到第 XX 天的密码`: 使用密码列表模式时，该行密码缺失或列表不完整。
+
+### 升级说明
+
+**从旧版升级至 v1.7.4+**：
+
+升级过程中，OpenWrt 包管理器可能会提示配置文件冲突。**无需手动操作**，升级脚本会自动：
+1. 保留你的手机号和已有的密码列表。
+2. 添加新的"密码种子"配置字段。
+3. 重启服务使配置生效。
+
+升级完成后，建议在 Web 界面补充填写"密码种子"字段以享受全自动登录的便利
 
 ## 🛠️ 开发相关
+
+### 版本历史
+
+**v1.7.4** (2025-12-21) - 本地自动算号与稳定性大幅提升
+- ✨ 新增内置自动算号功能，仅需 6 位原始密码
+- ✨ 智能降级机制：计算失败自动切换至密码列表
+- 🚀 密码缓存优化，显著降低 CPU 占用
+- 🛡️ 网络超时控制防止进程卡死
+- 🔧 配置无缝迁移，升级时自动保留用户设置
+- 🐛 修复脚本语法错误，提升进程稳定性
+
+更早的版本历史请参考 [Releases](../../releases) 页面。
 
 ### 目录结构
 ```
 .
-├── Makefile                    # OpenWrt 编译配置
-├── htdocs/                     # Web 界面 (JavaScript)
-├── luasrc/                     # 控制器逻辑 (Lua)
-├── root/                       # 系统文件
-│   ├── etc/config/chongyoung   # UCI 默认配置
-│   ├── etc/init.d/chongyoung   # Procd 启动脚本
-│   └── usr/bin/chongyoung.sh   # 核心 Shell 脚本
-└── index.html                  # 密码生成工具
+├── Makefile                        # OpenWrt 编译配置
+├── index.html                      # 密码生成工具 (Web 界面)
+├── README.md                       # 项目说明
+├── htdocs/                         # Web 界面文件
+│   └── luci-static/resources/view/chongyoung/
+│       └── general.js              # LuCI 配置界面
+├── luasrc/                         # Lua 控制层
+│   └── controller/chongyoung.lua   # LuCI 路由器
+├── root/                           # 系统集成文件
+│   ├── etc/config/chongyoung       # UCI 配置文件
+│   ├── etc/init.d/chongyoung       # Procd 启动脚本
+│   ├── etc/uci-defaults/99_chongyoung  # 升级迁移脚本
+│   ├── usr/bin/chongyoung.sh       # 核心守护进程
+│   ├── usr/share/chongyoung/calc_pwd.lua  # 密码算法 (Lua 版)
+│   └── usr/share/rpcd/acl.d/luci-app-chongyoung.json  # RPC 权限控制
+└── LICENSE                         # MIT 许可证
 ```
+
+### 技术亮点
+
+- **纯 Shell + Lua** 实现，最小化依赖。
+- **密码算法**: 采用 RC4 派生的 KSA 算法，完全兼容原校园网实现。
+- **Procd 守护**: 利用 OpenWrt 标准的 init 系统，确保服务稳定运行。
+- **UCI 配置**: 遵循 OpenWrt 配置规范，与其他插件和谐共处。
 
 ## 📄 许可证
 
