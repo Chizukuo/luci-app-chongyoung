@@ -24,7 +24,6 @@ return baseclass.extend({
 		}
 
 		return E('div', { 'class': 'cbi-section' }, [
-			E('h3', _('ChongYoung Network')),
 			E('div', { 'class': 'cbi-value' }, [
 				E('label', { 'class': 'cbi-value-title' }, _('Status')),
 				E('div', { 'class': 'cbi-value-field', 'style': 'color:' + color + '; font-weight:bold' }, status)
