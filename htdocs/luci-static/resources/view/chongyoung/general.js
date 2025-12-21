@@ -41,6 +41,8 @@ return view.extend({
 					}
 					view.innerHTML = '<div class="cbi-value-field"><span style="color:' + color + '; font-weight:bold">' + status + '</span></div>';
 				}
+			}).catch(function() {
+				// Ignore errors to keep polling alive
 			});
 		});
 
@@ -53,7 +55,17 @@ return view.extend({
 		o = s.option(form.Value, 'username', _('Phone Number'));
 		o.rmempty = false;
 
-		s = m.section(form.TypedSection, 'passwords', _('Daily Passwords'), _('Paste the 31 generated passwords here. One per line.'));
+		o = s.option(form.Value, 'password_seed', _('Password Seed'), _('Enter your 6-digit original password. If set, the daily password list below will be ignored.'));
+		o.rmempty = true;
+		o.datatype = 'string';
+		o.validate = function(section_id, value) {
+			if (value && value.length !== 6) {
+				return _('Password seed must be 6 characters long');
+			}
+			return true;
+		};
+
+		s = m.section(form.TypedSection, 'passwords', _('Daily Passwords'), _('Paste the 31 generated passwords here. One per line. (Ignored if Password Seed is set)'));
 		s.anonymous = true;
 		s.collapsible = true;
 

@@ -43,6 +43,9 @@ define Package/luci-app-chongyoung/install
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-chongyoung.json $(1)/usr/share/rpcd/acl.d/luci-app-chongyoung.json
 	
+	$(INSTALL_DIR) $(1)/usr/share/chongyoung
+	$(INSTALL_BIN) ./root/usr/share/chongyoung/calc_pwd.lua $(1)/usr/share/chongyoung/calc_pwd.lua
+
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
 	$(INSTALL_DATA) ./luasrc/controller/chongyoung.lua $(1)/usr/lib/lua/luci/controller/chongyoung.lua
 	

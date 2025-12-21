@@ -1,6 +1,7 @@
 config global 'general'
 	option enabled '0'
 	option username ''
+	option password_seed ''
 	option system 'CDMA+WLAN(Maod)'
 	option prefix '%21%5EAdcm0'
 	option AidcAuthAttr3 '47dnVRav'
