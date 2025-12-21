@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-chongyoung
-PKG_VERSION:=1.4
+PKG_VERSION:=1.6
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=chizukuo <chizukuo@icloud.com>
@@ -47,11 +47,7 @@ endef
 
 define Package/luci-app-chongyoung/postinst
 #!/bin/sh
-if [ -z "$${IPKG_INSTROOT}" ]; then
-	/etc/init.d/rpcd reload
-	/etc/init.d/chongyoung enable
-	/etc/init.d/chongyoung restart
-fi
+[ -n "$${IPKG_INSTROOT}" ] || { /etc/init.d/rpcd reload; /etc/init.d/chongyoung enable; /etc/init.d/chongyoung restart; }
 exit 0
 endef
 

@@ -39,11 +39,11 @@ init_network() {
         return 1
     fi
 
-    fylgurl=$(echo "$fyxml" | awk -v head="CDATA[" -v tail="]" '$0 ~ head {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
-    usmac=$(echo "$fyxml" | awk -v head="sermac=" -v tail="&wlanacname" '$0 ~ head {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
-    acname=$(echo "$fyxml" | awk -v head="wlanacname=" -v tail="&wlanuserip" '$0 ~ head {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
-    usip=$(echo "$fyxml" | awk -v head="wlanuserip=" -v tail="]" '$0 ~ head {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
-    AidcAuthAttr1=$(echo "$fyxml" | awk -v head="Attr1>" -v tail="</Aidc" '$0 ~ head {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
+    fylgurl=$(echo "$fyxml" | awk -v head="CDATA[" -v tail="]" 'index($0, head) {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
+    usmac=$(echo "$fyxml" | awk -v head="sermac=" -v tail="&wlanacname" 'index($0, head) {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
+    acname=$(echo "$fyxml" | awk -v head="wlanacname=" -v tail="&wlanuserip" 'index($0, head) {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
+    usip=$(echo "$fyxml" | awk -v head="wlanuserip=" -v tail="]" 'index($0, head) {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
+    AidcAuthAttr1=$(echo "$fyxml" | awk -v head="Attr1>" -v tail="</Aidc" 'index($0, head) {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
     
     return 0
 }
