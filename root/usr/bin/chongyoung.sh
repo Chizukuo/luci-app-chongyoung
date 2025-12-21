@@ -56,11 +56,20 @@ login() {
         return 1
     fi
     
-    day_num=$(echo "$AidcAuthAttr1" | cut -c 7-8 | sed -r 's/^0*([^0]+|0)$/\1/')
+    # 提取日期 (例如 21)
+    # 使用 awk 替代 cut/sed 以提高兼容性
+    day_num=$(echo "$AidcAuthAttr1" | awk '{print substr($0, 7, 2)}' | awk '{print int($0)}')
     
     # 从 password_list 中提取对应行的密码
     # sed -n "${day_num}p" 输出第 day_num 行
     password_list=$(uci -q get chongyoung.daily.password_list)
+    
+    # 确保 password_list 不为空
+    if [ -z "$password_list" ]; then
+        log "密码列表为空，请检查配置"
+        return 1
+    fi
+
     passwd=$(echo "$password_list" | sed -n "${day_num}p" | tr -d '\r')
     
     if [ -z "$passwd" ]; then
