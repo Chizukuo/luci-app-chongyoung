@@ -9,6 +9,9 @@
 		},
 		"write": {
 			"uci": [ "chongyoung" ]
+		},
+		"exec": {
+			"/etc/init.d/chongyoung": [ "restart" ]
 		}
 	}
 }

@@ -24,6 +24,26 @@ get_config() {
     
     user=$(uci -q get chongyoung.general.username)
     password_seed=$(uci -q get chongyoung.general.password_seed)
+    
+    # 计划任务配置
+    pause_enabled=$(uci -q get chongyoung.general.pause_enabled)
+    pause_start=$(uci -q get chongyoung.general.pause_start)
+    pause_end=$(uci -q get chongyoung.general.pause_end)
+    pause_disconnect_wan=$(uci -q get chongyoung.general.pause_disconnect_wan)
+    
+    # 高级超时配置
+    check_interval=$(uci -q get chongyoung.general.check_interval)
+    [ -z "$check_interval" ] && check_interval=30
+    
+    connect_timeout=$(uci -q get chongyoung.general.connect_timeout)
+    [ -z "$connect_timeout" ] && connect_timeout=5
+    
+    total_timeout=$(uci -q get chongyoung.general.total_timeout)
+    [ -z "$total_timeout" ] && total_timeout=10
+    
+    # 更新 CURL 配置
+    CURL_OPTS="-s --connect-timeout $connect_timeout --max-time $total_timeout"
+    
     system=$(uci -q get chongyoung.general.system)
     prefix=$(uci -q get chongyoung.general.prefix)
     
@@ -132,6 +152,35 @@ heart() {
     curl $CURL_OPTS -d "" -H "User-Agent: CDMA+WLAN(Maod)" -H "Content-Type: application/x-www-form-urlencoded" "$HEARTBEAT_URL" > /dev/null
 }
 
+# 检查是否在休眠时间
+check_pause_time() {
+    [ "$pause_enabled" != "1" ] && return 1
+    [ -z "$pause_start" ] || [ -z "$pause_end" ] && return 1
+    
+    # 防止系统时间未同步导致误判 (年份小于 2023 则认为时间未同步)
+    current_year=$(date +%Y)
+    [ "$current_year" -lt 2023 ] && return 1
+    
+    current_time=$(date +%H%M)
+    # 去除冒号，例如 23:30 -> 2330
+    start_time=$(echo "$pause_start" | tr -d ':')
+    end_time=$(echo "$pause_end" | tr -d ':')
+    
+    # 跨天处理 (例如 2330 到 0630)
+    if [ "$start_time" -gt "$end_time" ]; then
+        if [ "$current_time" -ge "$start_time" ] || [ "$current_time" -lt "$end_time" ]; then
+            return 0
+        fi
+    else
+        # 当天处理 (例如 0900 到 1700)
+        if [ "$current_time" -ge "$start_time" ] && [ "$current_time" -lt "$end_time" ]; then
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
 # 主循环
 main() {
     # 启动时读取一次配置即可
@@ -139,6 +188,32 @@ main() {
     get_config
     
     while true; do
+        # 检查是否处于休眠时段
+        if check_pause_time; then
+            update_status "休眠中 (计划任务 $pause_start - $pause_end)"
+            
+            # 如果启用了断开 WAN 选项
+            if [ "$pause_disconnect_wan" = "1" ]; then
+                if [ ! -f /tmp/chongyoung_wan_paused ]; then
+                    log "进入休眠时间，正在断开 WAN 接口..."
+                    ifdown wan
+                    touch /tmp/chongyoung_wan_paused
+                fi
+            fi
+            
+            sleep 60
+            continue
+        else
+            # 非休眠时间，检查是否需要恢复 WAN
+            if [ -f /tmp/chongyoung_wan_paused ]; then
+                log "休眠结束，正在恢复 WAN 接口..."
+                ifup wan
+                rm -f /tmp/chongyoung_wan_paused
+                # 恢复后给一点时间获取 IP
+                sleep 10
+            fi
+        fi
+
         # 状态检测 - 尝试 Ping 阿里DNS(223.5.5.5) 或 腾讯DNS(119.29.29.29)
         if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 || ping -c 1 -W 2 119.29.29.29 >/dev/null 2>&1; then
             # log "网络正常，发送心跳"
@@ -154,7 +229,7 @@ main() {
             fi
         fi
         
-        sleep 30
+        sleep "$check_interval"
     done
 }
 

@@ -23,10 +23,23 @@ return view.extend({
 				var color = 'green';
 				if (status.indexOf('重连') !== -1 || status.indexOf('失败') !== -1) {
 					color = 'red';
+				} else if (status.indexOf('休眠') !== -1) {
+					color = 'orange';
 				}
 				return '<span style="color:' + color + '; font-weight:bold">' + status + '</span>';
 			}).catch(function() {
 				return '<span style="color:grey">' + _('Not Running') + '</span>';
+			});
+		};
+		
+		o = s.option(form.Button, '_restart', _('Action'));
+		o.inputtitle = _('Restart Service');
+		o.inputstyle = 'apply';
+		o.onclick = function() {
+			return fs.exec('/etc/init.d/chongyoung', ['restart']).then(function() {
+				ui.addNotification(null, E('p', _('Service restarted successfully. Please wait for status update.')), 'info');
+			}).catch(function(e) {
+				ui.addNotification(null, E('p', _('Failed to restart service: ') + e.message), 'error');
 			});
 		};
 		
@@ -38,6 +51,8 @@ return view.extend({
 					var color = 'green';
 					if (status.indexOf('重连') !== -1 || status.indexOf('失败') !== -1) {
 						color = 'red';
+					} else if (status.indexOf('休眠') !== -1) {
+						color = 'orange';
 					}
 					view.innerHTML = '<div class="cbi-value-field"><span style="color:' + color + '; font-weight:bold">' + status + '</span></div>';
 				}
@@ -65,6 +80,33 @@ return view.extend({
 			return true;
 		};
 
+		s = m.section(form.TypedSection, 'global', _('Scheduled Pause'), _('Pause the service during specific hours (e.g., when the school network is offline).'));
+		s.anonymous = true;
+
+		o = s.option(form.Flag, 'pause_enabled', _('Enable Schedule'));
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'pause_start', _('Start Time'), _('Format: HH:MM (24-hour clock)'));
+		o.placeholder = '23:30';
+		o.depends('pause_enabled', '1');
+		o.validate = function(section_id, value) {
+			if (!value) return true;
+			if (!/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(value)) return _('Invalid time format. Use HH:MM');
+			return true;
+		};
+
+		o = s.option(form.Value, 'pause_end', _('End Time'), _('Format: HH:MM (24-hour clock)'));
+		o.placeholder = '06:30';
+		o.depends('pause_enabled', '1');
+		o.validate = function(section_id, value) {
+			if (!value) return true;
+			if (!/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(value)) return _('Invalid time format. Use HH:MM');
+			return true;
+		};
+
+		o = s.option(form.Flag, 'pause_disconnect_wan', _('Disconnect WAN'), _('Disconnect the WAN interface during the pause period. This helps devices detect network loss faster and switch to mobile data.'));
+		o.depends('pause_enabled', '1');
+
 		s = m.section(form.TypedSection, 'passwords', _('Daily Passwords'), _('Paste the 31 generated passwords here. One per line. (Ignored if Password Seed is set)'));
 		s.anonymous = true;
 		s.collapsible = true;
@@ -86,6 +128,18 @@ return view.extend({
 		s.collapsible = true;
 		s.collapsed = true;
 
+		o = s.option(form.Value, 'check_interval', _('Detection Interval'), _('Time in seconds between network checks (Default: 30)'));
+		o.datatype = 'uinteger';
+		o.placeholder = '30';
+
+		o = s.option(form.Value, 'connect_timeout', _('Connection Timeout'), _('Max time in seconds to connect to server (Default: 5)'));
+		o.datatype = 'uinteger';
+		o.placeholder = '5';
+
+		o = s.option(form.Value, 'total_timeout', _('Total Timeout'), _('Max time in seconds for the whole operation (Default: 10)'));
+		o.datatype = 'uinteger';
+		o.placeholder = '10';
+
 		o = s.option(form.Value, 'system', _('System Agent'));
 		o = s.option(form.Value, 'prefix', _('Prefix'));
 		
@@ -94,6 +148,15 @@ return view.extend({
 			o = s.option(form.Value, attr, attr);
 		});
 
-		return m.render();
+		return m.render().then(function(nodes) {
+			var footer = E('div', { 'class': 'cbi-section', 'style': 'text-align: center; margin-top: 20px; color: #888;' }, [
+				E('span', {}, _('Project hosted on ')),
+				E('a', { 'href': 'https://github.com/Chizukuo/luci-app-chongyoung', 'target': '_blank', 'style': 'color: #0069b4; text-decoration: none; font-weight: bold;' }, 'GitHub'),
+				E('span', {}, ' | '),
+				E('span', {}, 'v1.7.4')
+			]);
+			nodes.appendChild(footer);
+			return nodes;
+		});
 	}
 });

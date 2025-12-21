@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-chongyoung
-PKG_VERSION:=1.7
-PKG_RELEASE:=4
+PKG_VERSION:=1.8
+PKG_RELEASE:=1
 
 PKG_MAINTAINER:=chizukuo <chizukuo@icloud.com>
 PKG_LICENSE:=MIT
@@ -51,6 +51,9 @@ define Package/luci-app-chongyoung/install
 	
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/chongyoung
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/chongyoung/general.js $(1)/www/luci-static/resources/view/chongyoung/general.js
+
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/status/include
+	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/status/include/99_chongyoung.js $(1)/www/luci-static/resources/view/status/include/99_chongyoung.js
 
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./root/etc/uci-defaults/99_chongyoung $(1)/etc/uci-defaults/99_chongyoung
