@@ -69,18 +69,22 @@ jobs:
           # 忽略依赖检查错误 (因为我们是在 x86 SDK 上编译通用包，有些依赖可能不匹配但实际上不需要)
           make package/luci-app-chongyoung/compile V=s IGNORE_ERRORS=1
 
+      - name: Organize Files
+        run: |
+          find sdk/bin/packages -name "luci-app-chongyoung*.ipk" -exec mv {} . \;
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-chongyoung-ipk
-          path: sdk/bin/packages/*/base/luci-app-chongyoung*.ipk
+          path: luci-app-chongyoung*.ipk
 
       - name: Upload to Release
         if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: sdk/bin/packages/*/base/luci-app-chongyoung*.ipk
+          file: luci-app-chongyoung*.ipk
           tag: ${{ github.ref }}
           overwrite: true
           file_glob: true
