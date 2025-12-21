@@ -28,11 +28,14 @@ if [ -f /etc/config/chongyoung-opkg ]; then
 fi
 
 # 确保脚本有执行权限（虽然 opkg 会处理，但以防万一）
-chmod +x /usr/bin/chongyoung.sh
-chmod +x /usr/share/chongyoung/calc_pwd.lua
+chmod +x /usr/bin/chongyoung.sh 2>/dev/null
+chmod +x /usr/share/chongyoung/calc_pwd.lua 2>/dev/null
 
-/etc/init.d/rpcd reload
-/etc/init.d/chongyoung enable
-/etc/init.d/chongyoung restart
+# 重载 rpcd 以应用新的 ACL 权限（忽略错误）
+[ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload 2>/dev/null
+
+# 启用并启动服务
+/etc/init.d/chongyoung enable 2>/dev/null
+/etc/init.d/chongyoung restart 2>/dev/null
 
 exit 0
