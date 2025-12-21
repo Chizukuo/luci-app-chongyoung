@@ -2,7 +2,10 @@
 	"luci-app-chongyoung": {
 		"description": "Grant UCI access for luci-app-chongyoung",
 		"read": {
-			"uci": [ "chongyoung" ]
+			"uci": [ "chongyoung" ],
+			"file": {
+				"/tmp/chongyoung_status": [ "read" ]
+			}
 		},
 		"write": {
 			"uci": [ "chongyoung" ]
