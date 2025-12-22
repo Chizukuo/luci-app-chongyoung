@@ -165,7 +165,7 @@ return view.extend({
 				E('span', {}, _('Project hosted on ')),
 				E('a', { 'href': 'https://github.com/Chizukuo/luci-app-chongyoung', 'target': '_blank', 'style': 'color: #0069b4; text-decoration: none; font-weight: bold;' }, 'GitHub'),
 				E('span', {}, ' | '),
-				E('span', {}, 'v1.8.4')
+				E('span', {}, 'v1.8')
 			]);
 			nodes.appendChild(footer);
 			return nodes;
