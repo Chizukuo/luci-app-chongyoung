@@ -161,6 +161,9 @@ check_pause_time() {
     current_year=$(date +%Y)
     [ "$current_year" -lt 2023 ] && return 1
     
+    # 必须先成功联网一次（确保NTP有机会同步）才允许进入休眠
+    [ -f /tmp/chongyoung_time_verified ] || return 1
+    
     current_time=$(date +%H%M)
     # 去除冒号，例如 23:30 -> 2330
     start_time=$(echo "$pause_start" | tr -d ':')
@@ -186,6 +189,9 @@ main() {
     # 启动时读取一次配置即可
     # OpenWrt 的 procd 会在配置变更时自动重启此进程
     get_config
+    
+    # 清除上次运行可能残留的时间验证标志
+    rm -f /tmp/chongyoung_time_verified
     
     while true; do
         # 检查是否处于休眠时段
@@ -218,6 +224,10 @@ main() {
         if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 || ping -c 1 -W 2 119.29.29.29 >/dev/null 2>&1; then
             # log "网络正常，发送心跳"
             update_status "运行中 - 网络正常"
+            
+            # 标记时间已验证（网络通畅意味着NTP可以同步）
+            touch /tmp/chongyoung_time_verified
+            
             heart
         else
             log "网络断开，开始重连"
