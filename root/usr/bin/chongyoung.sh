@@ -198,11 +198,27 @@ main() {
         if check_pause_time; then
             update_status "休眠中 (计划任务 $pause_start - $pause_end)"
             
-            # 如果启用了断开 WAN 选项
+            # 如果启用了断开 WAN 和 暂时断开 LAN/Wi-Fi 选项
             if [ "$pause_disconnect_wan" = "1" ]; then
                 if [ ! -f /tmp/chongyoung_wan_paused ]; then
                     log "进入休眠时间，正在断开 WAN 接口..."
+
                     ifdown wan
+                    
+                    log "正在执行全网闪断策略 (有线+无线)..."
+                    
+                    ifconfig br-lan down
+
+                    wifi down
+        
+                    sleep 10
+                    
+                    ifconfig br-lan up
+
+                    wifi up
+                    
+                    log "局域网及 Wi-Fi 信号已恢复"
+    
                     touch /tmp/chongyoung_wan_paused
                 fi
             fi
