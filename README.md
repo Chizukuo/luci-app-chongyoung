@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 OpenWrt LuCI support for FeiYoung Campus Network Auto Login.
-专为飞扬校园网设计的 OpenWrt 自动登录插件，提供图形化配置界面与稳定的守护进程。
+专为飞young校园网设计的 OpenWrt 自动登录插件，提供图形化配置界面与稳定的守护进程。
 
 ## ✨ 功能特点
 
