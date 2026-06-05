@@ -121,6 +121,7 @@ enable_lan_ports() {
 # cleanup: 脚本退出时若处于休眠断网状态，恢复网络接口
 cleanup() {
     log "脚本退出，正在恢复网络接口..."
+    rm -f /tmp/feiyoung_online
     if [ -f /tmp/feiyoung_wan_paused ]; then
         enable_5g
         enable_lan_ports
@@ -291,8 +292,26 @@ sync_ntp() {
     # 1. 尝试 ntpd (BusyBox / 标准 ntpd)
     if command -v ntpd >/dev/null; then
         # BusyBox ntpd 参数示例：-q -n -p
-        ntpd -q -n -p "$server" >/dev/null 2>&1
-        rc=$?
+        # 放入后台运行，设置 5 秒超时，防止校园网未认证/拦截 UDP 123 导致阻塞整个主循环
+        ntpd -q -n -p "$server" >/dev/null 2>&1 &
+        local pid=$!
+        local count=0
+        while [ $count -lt 5 ]; do
+            if ! kill -0 $pid 2>/dev/null; then
+                wait $pid
+                rc=$?
+                break
+            fi
+            sleep 1
+            count=$((count + 1))
+        done
+        if kill -0 $pid 2>/dev/null; then
+            log "ntpd sync timed out, killing process $pid"
+            kill -9 $pid 2>/dev/null
+            wait $pid 2>/dev/null
+            rc=1
+        fi
+
         if [ $rc -eq 0 ]; then
             return 0
         else
@@ -302,8 +321,24 @@ sync_ntp() {
     
     # 2. 尝试 ntpclient
     if command -v ntpclient >/dev/null; then
-        ntpclient -s -h "$server" >/dev/null 2>&1
-        rc=$?
+        ntpclient -s -h "$server" >/dev/null 2>&1 &
+        local pid=$!
+        local count=0
+        while [ $count -lt 5 ]; do
+            if ! kill -0 $pid 2>/dev/null; then
+                wait $pid
+                rc=$?
+                break
+            fi
+            sleep 1
+            count=$((count + 1))
+        done
+        if kill -0 $pid 2>/dev/null; then
+            kill -9 $pid 2>/dev/null
+            wait $pid 2>/dev/null
+            rc=1
+        fi
+
         if [ $rc -eq 0 ]; then
             return 0
         else
@@ -313,8 +348,24 @@ sync_ntp() {
 
     # 3. 尝试 sntp
     if command -v sntp >/dev/null; then
-        sntp -s "$server" >/dev/null 2>&1
-        rc=$?
+        sntp -s "$server" >/dev/null 2>&1 &
+        local pid=$!
+        local count=0
+        while [ $count -lt 5 ]; do
+            if ! kill -0 $pid 2>/dev/null; then
+                wait $pid
+                rc=$?
+                break
+            fi
+            sleep 1
+            count=$((count + 1))
+        done
+        if kill -0 $pid 2>/dev/null; then
+            kill -9 $pid 2>/dev/null
+            wait $pid 2>/dev/null
+            rc=1
+        fi
+
         if [ $rc -eq 0 ]; then
             return 0
         else
@@ -399,6 +450,7 @@ main() {
         # 判断是否处于休眠时段
         if check_pause_time; then
             update_status "休眠中 (计划任务 $pause_start - $pause_end)"
+            rm -f /tmp/feiyoung_online
             
             # 若配置要求，断开 WAN 并持续关闭 5G Wi-Fi 与有线 LAN 端口直至休眠结束
             if [ "$pause_disconnect_wan" = "1" ]; then
@@ -479,11 +531,28 @@ main() {
                 fi
             fi
 
+            # 检测是否首次上线
+            if [ ! -f /tmp/feiyoung_online ]; then
+                touch /tmp/feiyoung_online
+                log "检测到网络已上线，触发关联服务/脚本更新"
+                # 自动启动/更新 AdBlock-Fast
+                if [ -x "/etc/init.d/adblock-fast" ]; then
+                    log "正在后台启动/更新 adblock-fast 服务..."
+                    /etc/init.d/adblock-fast start >/dev/null 2>&1 &
+                fi
+                # 自动更新壁纸
+                if [ -f /tmp/wallpaper_pending ]; then
+                    log "发现未决的壁纸刷新任务，正在后台运行..."
+                    /usr/bin/change_wallpaper.sh >/dev/null 2>&1 &
+                fi
+            fi
+
             # 发送心跳
             heart
         else
             log "网络断开，开始重连"
             update_status "运行中 - 正在重连..."
+            rm -f /tmp/feiyoung_online
             if init_network; then
                 login
             else
