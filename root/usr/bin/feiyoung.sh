@@ -450,7 +450,13 @@ main() {
         # 判断是否处于休眠时段
         if check_pause_time; then
             update_status "休眠中 (计划任务 $pause_start - $pause_end)"
-            rm -f /tmp/feiyoung_online
+            if [ -f /tmp/feiyoung_online ]; then
+                rm -f /tmp/feiyoung_online
+                if [ -x "/etc/feiyoung.user" ]; then
+                    log "进入休眠断网，正在执行自定义用户脚本 (/etc/feiyoung.user offline)..."
+                    /etc/feiyoung.user offline >/dev/null 2>&1 &
+                fi
+            fi
             
             # 若配置要求，断开 WAN 并持续关闭 5G Wi-Fi 与有线 LAN 端口直至休眠结束
             if [ "$pause_disconnect_wan" = "1" ]; then
@@ -531,19 +537,12 @@ main() {
                 fi
             fi
 
-            # 检测是否首次上线
+            # 检测是否首次上线，触发用户自定义联动脚本
             if [ ! -f /tmp/feiyoung_online ]; then
                 touch /tmp/feiyoung_online
-                log "检测到网络已上线，触发关联服务/脚本更新"
-                # 自动启动/更新 AdBlock-Fast
-                if [ -x "/etc/init.d/adblock-fast" ]; then
-                    log "正在后台启动/更新 adblock-fast 服务..."
-                    /etc/init.d/adblock-fast start >/dev/null 2>&1 &
-                fi
-                # 自动更新壁纸
-                if [ -f /tmp/wallpaper_pending ]; then
-                    log "发现未决的壁纸刷新任务，正在后台运行..."
-                    /usr/bin/change_wallpaper.sh >/dev/null 2>&1 &
+                if [ -x "/etc/feiyoung.user" ]; then
+                    log "检测到网络已上线，正在执行自定义用户脚本 (/etc/feiyoung.user online)..."
+                    /etc/feiyoung.user online >/dev/null 2>&1 &
                 fi
             fi
 
@@ -552,7 +551,13 @@ main() {
         else
             log "网络断开，开始重连"
             update_status "运行中 - 正在重连..."
-            rm -f /tmp/feiyoung_online
+            if [ -f /tmp/feiyoung_online ]; then
+                rm -f /tmp/feiyoung_online
+                if [ -x "/etc/feiyoung.user" ]; then
+                    log "检测到网络断开，正在执行自定义用户脚本 (/etc/feiyoung.user offline)..."
+                    /etc/feiyoung.user offline >/dev/null 2>&1 &
+                fi
+            fi
             if init_network; then
                 login
             else

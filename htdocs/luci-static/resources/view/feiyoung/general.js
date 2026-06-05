@@ -186,7 +186,7 @@ return view.extend({
 				E('span', {}, _('Project hosted on ')),
 				E('a', { 'href': 'https://github.com/Chizukuo/luci-app-feiyoung', 'target': '_blank', 'style': 'color: #0069b4; text-decoration: none; font-weight: bold;' }, 'GitHub'),
 				E('span', {}, ' | '),
-				E('span', {}, 'v1.9.1')
+				E('span', {}, 'v1.9.2')
 			]);
 			nodes.appendChild(footer);
 			return nodes;
