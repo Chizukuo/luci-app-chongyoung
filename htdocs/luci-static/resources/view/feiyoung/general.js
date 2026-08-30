@@ -1,11 +1,11 @@
 'use strict';
 /*
- * luci-app-feiyoung - LuCI view: General settings
+ * luci-app-feiyoung - LuCI view: General settings (v2)
  * 描述: FeiYoung 校园网自动认证的 Web UI 界面
  * 功能:
  *  - 显示当前运行状态并支持轮询更新
  *  - 提供重启服务按钮
- *  - 提供账号、密码种子、每日密码列表、计划休眠与高级参数设置
+ *  - 提供账号、静态密码、计划休眠与高级参数设置
  */
 'require view';
 'require form';
@@ -32,11 +32,10 @@ return view.extend({
 		// Status 区块：显示当前脚本运行状态（/tmp/feiyoung_status），并提供重启操作
 		s = m.section(form.TypedSection, 'global', _('Status'));
 		s.anonymous = true;
-		
+
 		o = s.option(form.DummyValue, '_status', _('Current Status'));
 		o.rawhtml = true;
 		o.default = '<em>' + _('Collecting data...') + '</em>';
-		// cfgvalue: 从 /tmp/feiyoung_status 读取状态并用颜色提示严重性（正常=green、重连/失败=red、休眠=orange）
 		o.cfgvalue = function(section_id) {
 			return fs.read('/tmp/feiyoung_status').then(function(status) {
 				status = status ? status.trim() : _('Not Running');
@@ -48,15 +47,13 @@ return view.extend({
 				}
 				return '<span style="color:' + color + '; font-weight:bold">' + status + '</span>';
 			}).catch(function() {
-				// 读取失败表示服务未运行或文件不存在
 				return '<span style="color:grey">' + _('Not Running') + '</span>';
 			});
 		};
-		
+
 		o = s.option(form.Button, '_restart', _('Action'));
 		o.inputtitle = _('Restart Service');
 		o.inputstyle = 'apply';
-		// 点击回调: 调用后端的 restart 操作并展示通知结果
 		o.onclick = function() {
 			return callInitAction('feiyoung', 'restart').then(function(result) {
 				if (result) {
@@ -68,8 +65,8 @@ return view.extend({
 				ui.addNotification(null, E('p', _('Failed to restart service: ') + e.message), 'error');
 			});
 		};
-		
-		// 定期轮询状态文件并更新界面（保持短轮询以便即时反馈）
+
+		// 定期轮询状态文件并更新界面
 		poll.add(function() {
 			return fs.read('/tmp/feiyoung_status').then(function(status) {
 				var view = document.getElementById('cbi-feiyoung-global-_status');
@@ -83,12 +80,10 @@ return view.extend({
 					}
 					view.innerHTML = '<div class="cbi-value-field"><span style="color:' + color + '; font-weight:bold">' + status + '</span></div>';
 				}
-			}).catch(function() {
-				// 忽略读取错误以保持轮询继续运行
-			});
+			}).catch(function() {});
 		});
 
-		// General Settings: 基本配置（启用/手机号/密码种子）
+		// General Settings: 基本配置（启用/手机号/静态密码）
 		s = m.section(form.TypedSection, 'global', _('General Settings'));
 		s.anonymous = true;
 
@@ -98,18 +93,19 @@ return view.extend({
 		o = s.option(form.Value, 'username', _('Phone Number'));
 		o.rmempty = false;
 
-		// Password Seed: 若填写则使用此 6 位原始密码生成每日密码，优先于手动列表
-		o = s.option(form.Value, 'password_seed', _('Password Seed'), _('Enter your 6-digit original password. If set, the daily password list below will be ignored.'));
+		// Password: 6 位静态密码（直接提交，不再每日算号）
+		o = s.option(form.Value, 'password', _('Password'), _('Enter your 6-digit static password.'));
 		o.rmempty = true;
 		o.datatype = 'string';
+		o.password = true;
 		o.validate = function(section_id, value) {
 			if (value && value.length !== 6) {
-				return _('Password seed must be 6 characters long');
+				return _('Password must be 6 characters long');
 			}
 			return true;
 		};
 
-		// Scheduled Pause: 配置服务的定时休眠，可在学校网维护/离线时自动暂停认证行为
+		// Scheduled Pause: 配置服务的定时休眠
 		s = m.section(form.TypedSection, 'global', _('Scheduled Pause'), _('Pause the service during specific hours (e.g., when the school network is offline).'));
 		s.anonymous = true;
 
@@ -137,25 +133,8 @@ return view.extend({
 		o = s.option(form.Flag, 'pause_disconnect_wan', _('Disconnect WAN'), _('Disconnect the WAN interface during the pause period. This helps devices detect network loss faster and switch to mobile data.'));
 		o.depends('pause_enabled', '1');
 
-		// Daily Passwords: 手动粘贴 31 行每日密码（当未使用 password_seed 时生效）
-		s = m.section(form.TypedSection, 'passwords', _('Daily Passwords'), _('Paste the 31 generated passwords here. One per line. (Ignored if Password Seed is set)'));
-		s.anonymous = true;
-		s.collapsible = true;
-
-		o = s.option(form.TextValue, 'password_list', _('Password List'));
-		o.rows = 10;
-		o.wrap = 'off';
-		o.validate = function(section_id, value) {
-			if (!value) return true;
-			var lines = value.trim().split(/\r?\n/);
-			if (lines.length !== 31) {
-				return _('Warning: You should provide exactly 31 passwords. Currently: ') + lines.length;
-			}
-			return true;
-		};
-
-		// Advanced Settings: 高级参数（一般不建议修改，来自 edition.ini）
-		s = m.section(form.TypedSection, 'global', _('Advanced Settings'), _('System parameters from edition.ini') + '<br /><span style="color:red; font-weight:bold">' + _('WARNING: Do not modify unless you know what you are doing!') + '</span>');
+		// Advanced Settings: 高级参数（一般不建议修改）
+		s = m.section(form.TypedSection, 'global', _('Advanced Settings'), _('Advanced parameters.') + '<br /><span style="color:red; font-weight:bold">' + _('WARNING: Do not modify unless you know what you are doing!') + '</span>');
 		s.anonymous = true;
 		s.collapsible = true;
 		s.collapsed = true;
@@ -172,13 +151,12 @@ return view.extend({
 		o.datatype = 'uinteger';
 		o.placeholder = '10';
 
-		o = s.option(form.Value, 'system', _('System Agent'));
-		o = s.option(form.Value, 'prefix', _('Prefix'));
-		
-		var attrs = ['AidcAuthAttr3', 'AidcAuthAttr4', 'AidcAuthAttr5', 'AidcAuthAttr6', 'AidcAuthAttr8', 'AidcAuthAttr15', 'AidcAuthAttr22', 'AidcAuthAttr23'];
-		attrs.forEach(function(attr) {
-			o = s.option(form.Value, attr, attr);
-		});
+		o = s.option(form.Value, 'gateway', _('Portal Gateway'), _('Portal base URL. Auto-discovered by default via HTTP redirect; this is a fallback.'));
+		o.placeholder = 'http://58.53.199.144:8001';
+
+		o = s.option(form.Value, 'passType', _('Password Type'), _('1 = static password, 2 = dynamic password. Default: 1'));
+		o.datatype = 'uinteger';
+		o.placeholder = '1';
 
 		// Render 完成后追加 footer（项目链接与版本信息）
 		return m.render().then(function(nodes) {
@@ -186,7 +164,7 @@ return view.extend({
 				E('span', {}, _('Project hosted on ')),
 				E('a', { 'href': 'https://github.com/Chizukuo/luci-app-feiyoung', 'target': '_blank', 'style': 'color: #0069b4; text-decoration: none; font-weight: bold;' }, 'GitHub'),
 				E('span', {}, ' | '),
-				E('span', {}, 'v1.9.2')
+				E('span', {}, 'v2.0.0')
 			]);
 			nodes.appendChild(footer);
 			return nodes;

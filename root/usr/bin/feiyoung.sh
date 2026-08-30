@@ -1,15 +1,17 @@
 #!/bin/sh
 #
-# luci-app-feiyoung: 自动认证与心跳脚本
-# 说明：定时检测网络并在需要时进行认证，向心跳服务器发送心跳。
+# luci-app-feiyoung: 自动认证脚本 (v2 - 湖北电信 school_hbct 门户)
+# 说明：定时检测网络，未认证时通过重定向发现门户并自动登录。
 # 注意：仅在 UCI 配置启用时运行。
 #
 CURL_OPTS="-s --connect-timeout 5 --max-time 10"
-HEARTBEAT_URL="http://58.53.199.146:8007/Hv6_dW"
+UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+COOKIE_JAR="/tmp/feiyoung_cookie"
 
-# 全局缓存（用于避免重复计算每天密码）
-CACHE_DAY=""
-CACHE_PWD=""
+# 运行时变量（由 get_config / discover_portal / init_network 设置）
+gateway=""      # 门户 base 地址，如 http://58.53.199.144:8001
+PORTAL_URL=""   # 完整门户地址（含 userip/nasip/usermac 参数）
+paramStr=""     # 登录 token
 
 # get_5g_radios: 获取所有 5G 无线设备名称
 get_5g_radios() {
@@ -18,7 +20,7 @@ get_5g_radios() {
         local band=$(uci -q get wireless.$dev.band)
         local hwmode=$(uci -q get wireless.$dev.hwmode)
         local channel=$(uci -q get wireless.$dev.channel)
-        
+
         local is_5g=0
         if [ "$band" = "5g" ]; then
             is_5g=1
@@ -29,7 +31,7 @@ get_5g_radios() {
         elif [ -n "$channel" ] && [ "$channel" != "auto" ] && [ "$channel" -gt 14 ] 2>/dev/null; then
             is_5g=1
         fi
-        
+
         if [ "$is_5g" = "1" ]; then
             echo "$dev"
         fi
@@ -78,13 +80,11 @@ get_lan_interfaces() {
     local port
     if [ -d "/sys/class/net/br-lan/brif" ]; then
         for port in $(ls /sys/class/net/br-lan/brif); do
-            # 过滤掉无线接口
             if ! echo "$port" | grep -q -E "wlan|ath|wl|ap"; then
                 echo "$port"
             fi
         done
     else
-        # 兜底方案：从 UCI 配置读取
         local ports=$(uci -q get network.lan.ports)
         [ -z "$ports" ] && ports=$(uci -q get network.lan.ifname)
         for port in $ports; do
@@ -125,8 +125,8 @@ cleanup() {
     if [ -f /tmp/feiyoung_wan_paused ]; then
         enable_5g
         enable_lan_ports
-        ifconfig br-lan up >/dev/null 2>&1 # 保证旧版本的 br-lan down 得到恢复
-        wifi up >/dev/null 2>&1            # 保证旧版本的 wifi down 得到恢复
+        ifconfig br-lan up >/dev/null 2>&1
+        wifi up >/dev/null 2>&1
         ifup wan >/dev/null 2>&1
         rm -f /tmp/feiyoung_wan_paused
     fi
@@ -134,165 +134,138 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # log: 写入系统日志（tag: feiyoung）
-# 参数：$1 - 日志内容
 log() {
     logger -t feiyoung "$1"
 }
 
 # update_status: 将状态写入 /tmp/feiyoung_status
-# 参数：$1 - 状态文本
 update_status() {
     echo "$1" > /tmp/feiyoung_status
 }
 
+# get_base: 从完整 URL 提取 base（scheme://host:port）
+get_base() {
+    echo "$1" | sed -n 's#^\(http://[^/?]*\).*#\1#p'
+}
+
+# ensure_default_route: 确保存在默认路由（校园网 DHCP 偶发不下发网关到内核）
+ensure_default_route() {
+    ip route show default >/dev/null 2>&1 && return 0
+    local gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
+    [ -z "$gw" ] && gw="100.64.0.1"
+    if ip route add default via "$gw" dev wan >/dev/null 2>&1; then
+        log "已补充默认路由 via $gw"
+    fi
+}
+
 # get_config: 从 UCI 读取脚本所需配置；若未启用则退出脚本
-# 设置变量：user、password_seed、pause_*（计划任务）、check_interval、connect_timeout、total_timeout、system、prefix、AidcAuthAttr*
 get_config() {
     enabled=$(uci -q get feiyoung.general.enabled)
     [ "$enabled" = "1" ] || exit 0
-    
+
     user=$(uci -q get feiyoung.general.username)
-    password_seed=$(uci -q get feiyoung.general.password_seed)
-    
-    # 计划任务相关配置（启用/起止时间/是否断开 WAN）
+    password=$(uci -q get feiyoung.general.password)
+    # 兼容旧配置字段
+    [ -z "$password" ] && password=$(uci -q get feiyoung.general.password_seed)
+
+    passType=$(uci -q get feiyoung.general.passType)
+    [ -z "$passType" ] && passType=1
+
+    gateway=$(uci -q get feiyoung.general.gateway)
+    [ -z "$gateway" ] && gateway="http://58.53.199.144:8001"
+
+    # 计划任务相关配置
     pause_enabled=$(uci -q get feiyoung.general.pause_enabled)
     pause_start=$(uci -q get feiyoung.general.pause_start)
     pause_end=$(uci -q get feiyoung.general.pause_end)
     pause_disconnect_wan=$(uci -q get feiyoung.general.pause_disconnect_wan)
-    
-    # 超时与间隔配置（采用默认值兜底）
+
+    # 超时与间隔配置（默认值兜底）
     check_interval=$(uci -q get feiyoung.general.check_interval)
     [ -z "$check_interval" ] && check_interval=30
-    
+
     connect_timeout=$(uci -q get feiyoung.general.connect_timeout)
     [ -z "$connect_timeout" ] && connect_timeout=5
-    
+
     total_timeout=$(uci -q get feiyoung.general.total_timeout)
     [ -z "$total_timeout" ] && total_timeout=10
-    
-    # 更新 curl 参数
-    CURL_OPTS="-s --connect-timeout $connect_timeout --max-time $total_timeout"
-    
-    system=$(uci -q get feiyoung.general.system)
-    prefix=$(uci -q get feiyoung.general.prefix)
-    
-    # 固定认证参数
-    AidcAuthAttr3=$(uci -q get feiyoung.general.AidcAuthAttr3)
-    AidcAuthAttr4=$(uci -q get feiyoung.general.AidcAuthAttr4)
-    AidcAuthAttr5=$(uci -q get feiyoung.general.AidcAuthAttr5)
-    AidcAuthAttr6=$(uci -q get feiyoung.general.AidcAuthAttr6)
-    AidcAuthAttr8=$(uci -q get feiyoung.general.AidcAuthAttr8)
-    AidcAuthAttr15=$(uci -q get feiyoung.general.AidcAuthAttr15)
-    AidcAuthAttr22=$(uci -q get feiyoung.general.AidcAuthAttr22)
-    AidcAuthAttr23=$(uci -q get feiyoung.general.AidcAuthAttr23)
-} 
 
-# init_network: 请求运营商网关以获取认证所需参数（fylgurl、AidcAuthAttr1）
+    CURL_OPTS="-s --connect-timeout $connect_timeout --max-time $total_timeout"
+}
+
+# discover_portal: 通过访问普通 HTTP 站点触发重定向，获取完整门户地址（含参数）
+# 返回：0 成功（PORTAL_URL 已设置），1 失败
+discover_portal() {
+    local site loc
+    # 未认证时 DNS 不可用，用纯 IP 触发 NAS 的 HTTP 重定向
+    for site in "http://223.5.5.5" "http://119.29.29.29" "http://114.114.114.114" "http://1.1.1.1"; do
+        loc=$(curl $CURL_OPTS -A "$UA" -D - -o /dev/null "$site" 2>/dev/null \
+            | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
+        if [ -n "$loc" ] && echo "$loc" | grep -q "http"; then
+            PORTAL_URL="$loc"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# init_network: 请求门户获取 paramStr（cookie 存于 COOKIE_JAR）
 # 返回：0 成功，1 失败
 init_network() {
-    fyxml=$(curl $CURL_OPTS -H "Accept: */*" -H "User-Agent:CDMA+WLAN(Maod)" -H "Accept-Language: zh-Hans-CN;q=1" -H "Accept-Encoding: gzip, deflate" -H "Connection: keep-alive" -H "Content-Type:application/x-www-form-urlencoded" -L "http://100.64.0.1")
-    
-    if [ -z "$fyxml" ]; then
-        log "无法连接到认证服务器"
+    rm -f "$COOKIE_JAR"
+    local url="$PORTAL_URL"
+    [ -z "$url" ] && url="$gateway"
+
+    fyhtml=$(curl $CURL_OPTS -A "$UA" -c "$COOKIE_JAR" "$url")
+
+    if [ -z "$fyhtml" ]; then
+        log "无法连接到认证门户 ($url)"
         return 1
     fi
 
-    fylgurl=$(echo "$fyxml" | awk -v head="CDATA[" -v tail="]" 'index($0, head) {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
-    AidcAuthAttr1=$(echo "$fyxml" | awk -v head="Attr1>" -v tail="</Aidc" 'index($0, head) {print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}' | head -n 1)
-    
-    if [ -z "$fylgurl" ] || [ -z "$AidcAuthAttr1" ]; then
-        log "解析认证参数失败"
+    paramStr=$(echo "$fyhtml" | sed -n 's/.*paramStr=\([^"]*\)".*/\1/p' | head -1)
+
+    if [ -z "$paramStr" ]; then
+        log "解析 paramStr 失败"
         return 1
     fi
 
     return 0
-} 
-
-# login: 根据 AidcAuthAttr1 计算当日密码并提交登录请求；记录登录结果
-# 前置：AidcAuthAttr1 已由 init_network 设置
-login() {
-    # 提取服务器时间中的日期（示例：21）
-    # 使用 awk 提取并转换为整数以兼容 BusyBox
-    if [ -z "$AidcAuthAttr1" ]; then
-        log "获取服务器时间失败"
-        return 1
-    fi
-
-    day_num=$(echo "$AidcAuthAttr1" | awk '{print substr($0, 7, 2)}' | awk '{print int($0)}')
-    
-    passwd=""
-    
-    # 优先使用缓存避免重复计算
-    if [ "$day_num" = "$CACHE_DAY" ] && [ -n "$CACHE_PWD" ]; then
-        passwd="$CACHE_PWD"
-        # log "使用缓存密码 (日期: $day_num)"
-    else
-        # 若设置了密码种子，尝试调用外部计算脚本
-        if [ -n "$password_seed" ]; then
-            if [ -x "/usr/share/feiyoung/calc_pwd.lua" ]; then
-                # 调用脚本并检查退出码与输出
-                calc_out=$(/usr/share/feiyoung/calc_pwd.lua "$password_seed" "$day_num")
-                if [ $? -eq 0 ] && [ -n "$calc_out" ]; then
-                    passwd="$calc_out"
-                else
-                    log "密码计算失败"
-                    # 失败时回退到列表模式
-                fi
-            else
-                log "找不到密码计算脚本"
-            fi
-        fi
-
-# 回退：从 UCI 的 password_list 中获取对应行的密码
-            if [ -z "$passwd" ]; then
-                password_list=$(uci -q get feiyoung.daily.password_list)
-                
-                # password_list 为空视为配置错误
-            if [ -z "$password_list" ]; then
-                log "密码列表为空且未设置密码种子，请检查配置"
-                return 1
-            fi
-
-            passwd=$(echo "$password_list" | sed -n "${day_num}p" | tr -d '\r')
-        fi
-        
-        # 更新缓存
-        if [ -n "$passwd" ]; then
-            CACHE_DAY="$day_num"
-            CACHE_PWD="$passwd"
-        fi
-    fi
-    
-    if [ -z "$passwd" ]; then
-        log "未找到第 ${day_num} 天的密码"
-        return 1
-    fi
-
-    log "正在尝试登录... 用户: $user, 日期: $day_num"
-    
-    lgg=$(curl $CURL_OPTS -d "&createAuthorFlag=0&UserName=${prefix}${user}&Password=${passwd}&AidcAuthAttr1=${AidcAuthAttr1}&AidcAuthAttr3=${AidcAuthAttr3}&AidcAuthAttr4=${AidcAuthAttr4}&AidcAuthAttr5=${AidcAuthAttr5}&AidcAuthAttr6=${AidcAuthAttr6}&AidcAuthAttr8=${AidcAuthAttr8}&AidcAuthAttr15=${AidcAuthAttr15}&AidcAuthAttr22=${AidcAuthAttr22}&AidcAuthAttr23=${AidcAuthAttr23}" -H "User-Agent: ${system}" -H "Content-Type: application/x-www-form-urlencoded" "${fylgurl}")
-    
-    result=$(echo "$lgg" | awk -v head="ReplyMessage>" -v tail="</ReplyMessage" '{print substr($0, index($0,head)+length(head),index($0,tail)-index($0,head)-length(head))}')
-    log "登录结果: $result"
 }
 
-# heart: 向心跳服务器发送空 POST，保持会话
-# 无返回值
-heart() {
-    curl $CURL_OPTS -d "" -H "User-Agent: CDMA+WLAN(Maod)" -H "Content-Type: application/x-www-form-urlencoded" "$HEARTBEAT_URL" > /dev/null
-} 
-
-# sync_ntp: 尝试使用系统可用的 NTP 工具同步系统时间（ntpd/ntpclient/sntp）
-# 参数：$1 - NTP 服务器（域名或 IP）
+# login: 提交登录请求并判断结果
 # 返回：0 成功，1 失败
+login() {
+    local base resp loc
+    base=$(get_base "$PORTAL_URL")
+    [ -z "$base" ] && base="$gateway"
+
+    log "正在尝试登录... 用户: $user"
+
+    resp=$(curl $CURL_OPTS -A "$UA" -i -b "$COOKIE_JAR" -H "Content-Type: application/x-www-form-urlencoded" \
+        --data "UserType=1&paramStr=${paramStr}&pwdType=${passType}&aidcauthtype=0&vfcodeflg=false&UserName=${user}&PassWord=${password}" \
+        "${base}/page_auth.jsp")
+
+    loc=$(echo "$resp" | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
+
+    if echo "$loc" | grep -q "logon.jsp"; then
+        log "登录成功 (用户: $user)"
+        return 0
+    elif echo "$loc" | grep -q "login_fail.jsp"; then
+        log "登录失败 (用户: $user)"
+        return 1
+    else
+        log "登录结果未知: $loc"
+        return 1
+    fi
+}
+
+# sync_ntp: 尝试使用系统可用的 NTP 工具同步系统时间
 sync_ntp() {
     local server="$1"
     local rc=1
-    
-    # 1. 尝试 ntpd (BusyBox / 标准 ntpd)
+
     if command -v ntpd >/dev/null; then
-        # BusyBox ntpd 参数示例：-q -n -p
-        # 放入后台运行，设置 5 秒超时，防止校园网未认证/拦截 UDP 123 导致阻塞整个主循环
         ntpd -q -n -p "$server" >/dev/null 2>&1 &
         local pid=$!
         local count=0
@@ -306,20 +279,13 @@ sync_ntp() {
             count=$((count + 1))
         done
         if kill -0 $pid 2>/dev/null; then
-            log "ntpd sync timed out, killing process $pid"
             kill -9 $pid 2>/dev/null
             wait $pid 2>/dev/null
             rc=1
         fi
-
-        if [ $rc -eq 0 ]; then
-            return 0
-        else
-            log "ntpd sync failed with code $rc"
-        fi
+        [ $rc -eq 0 ] && return 0
     fi
-    
-    # 2. 尝试 ntpclient
+
     if command -v ntpclient >/dev/null; then
         ntpclient -s -h "$server" >/dev/null 2>&1 &
         local pid=$!
@@ -338,15 +304,9 @@ sync_ntp() {
             wait $pid 2>/dev/null
             rc=1
         fi
-
-        if [ $rc -eq 0 ]; then
-            return 0
-        else
-            log "ntpclient sync failed with code $rc"
-        fi
+        [ $rc -eq 0 ] && return 0
     fi
 
-    # 3. 尝试 sntp
     if command -v sntp >/dev/null; then
         sntp -s "$server" >/dev/null 2>&1 &
         local pid=$!
@@ -365,89 +325,62 @@ sync_ntp() {
             wait $pid 2>/dev/null
             rc=1
         fi
-
-        if [ $rc -eq 0 ]; then
-            return 0
-        else
-            log "sntp sync failed with code $rc"
-        fi
+        [ $rc -eq 0 ] && return 0
     fi
-    
+
     return 1
-} 
+}
 
 # sync_http: 通过 HTTP(S) 响应头获取 Date 字段并设置系统时间（fallback）
-# 返回：0 成功，1 失败
 sync_http() {
-    # 备选站点（HTTP/HTTPS）用于获取 Date 头
     local sites="http://www.baidu.com http://www.qq.com https://www.taobao.com https://www.aliyun.com"
-    
+
     for site in $sites; do
-        log "尝试使用 HTTP(S) 对时: $site"
-        # 获取响应头并解析 Date
         http_header=$(curl -sI --connect-timeout 3 "$site")
         http_date=$(echo "$http_header" | grep -i "^Date:" | sed 's/Date: //i' | tr -d '\r')
-        
+
         if [ -n "$http_date" ]; then
-            log "获取到时间: $http_date"
             date -s "$http_date" >/dev/null 2>&1
-            rc=$?
-            if [ $rc -eq 0 ]; then
-                return 0
-            else
-                log "设置时间失败 (RC=$rc)"
-            fi
-        else
-            log "无法获取 Date 头"
+            [ $? -eq 0 ] && return 0
         fi
     done
-    
-    return 1
-} 
 
-# 检查是否在休眠时间
+    return 1
+}
+
+# check_pause_time: 检查是否在休眠时间
 check_pause_time() {
     [ "$pause_enabled" != "1" ] && return 1
     [ -z "$pause_start" ] || [ -z "$pause_end" ] && return 1
-    
-    # 防止系统时间未同步导致误判 (年份小于 2019 则认为时间未同步)
+
     current_year=$(date +%Y)
     [ "$current_year" -lt 2019 ] && return 1
-    
-    # 必须先成功联网一次（确保NTP有机会同步）才允许进入休眠
     [ -f /tmp/feiyoung_time_verified ] || return 1
-    
+
     current_time=$(date +%H%M)
-    # 去除冒号，例如 23:30 -> 2330
     start_time=$(echo "$pause_start" | tr -d ':')
     end_time=$(echo "$pause_end" | tr -d ':')
-    
-    # 跨天处理 (例如 2330 到 0630)
+
     if [ "$start_time" -gt "$end_time" ]; then
         if [ "$current_time" -ge "$start_time" ] || [ "$current_time" -lt "$end_time" ]; then
             return 0
         fi
     else
-        # 当天处理 (例如 0900 到 1700)
         if [ "$current_time" -ge "$start_time" ] && [ "$current_time" -lt "$end_time" ]; then
             return 0
         fi
     fi
-    
+
     return 1
 }
 
-# main: 主循环，读取配置后按配置周期检测网络状态、对时、登录并发送心跳
-# 行为：在休眠时断开/恢复 WAN；网络断开时尝试认证
+# main: 主循环
 main() {
-    # 启动时读取一次配置；OpenWrt 的 procd 会在配置变更时重启此进程
     get_config
-    
-    # 清理上次运行可能残留的时间验证标志
+
     rm -f /tmp/feiyoung_time_verified
-    
+
     while true; do
-        # 判断是否处于休眠时段
         if check_pause_time; then
             update_status "休眠中 (计划任务 $pause_start - $pause_end)"
             if [ -f /tmp/feiyoung_online ]; then
@@ -457,87 +390,60 @@ main() {
                     /etc/feiyoung.user offline >/dev/null 2>&1 &
                 fi
             fi
-            
-            # 若配置要求，断开 WAN 并持续关闭 5G Wi-Fi 与有线 LAN 端口直至休眠结束
+
             if [ "$pause_disconnect_wan" = "1" ]; then
                 if [ ! -f /tmp/feiyoung_wan_paused ]; then
                     log "进入休眠时间，正在断开 WAN 接口..."
                     ifdown wan
-                    
-                    log "正在关闭 5G Wi-Fi 信号..."
                     disable_5g
-                    
-                    log "正在关闭有线 LAN 端口..."
                     disable_lan_ports
-                    
                     touch /tmp/feiyoung_wan_paused
                 fi
             fi
-            
+
             sleep 60
             continue
         else
-            # 非休眠时间，若之前暂停过则恢复 WAN、5G Wi-Fi 及有线 LAN 端口
             if [ -f /tmp/feiyoung_wan_paused ]; then
                 log "休眠结束，正在恢复网络接口..."
                 enable_5g
                 enable_lan_ports
                 ifup wan
                 rm -f /tmp/feiyoung_wan_paused
-                # 恢复后给一点时间获取 IP
                 sleep 10
             fi
         fi
 
-        # 网络检测：ping 常用 DNS 作为连通性判定
+        # 网络检测
         if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 || ping -c 1 -W 2 119.29.29.29 >/dev/null 2>&1; then
             update_status "运行中 - 网络正常"
-            
-            # 首次检测到网络恢复时，尝试同步时间并标记为已验证
+
             if [ ! -f /tmp/feiyoung_time_verified ]; then
                 sync_success=0
-                
-                # 1. 优先尝试系统配置的 NTP 服务器
                 sys_ntp=$(uci -q get system.ntp.server | awk '{print $1}')
                 if [ -n "$sys_ntp" ]; then
-                    log "尝试系统 NTP 同步 (Server: $sys_ntp)..."
                     if sync_ntp "$sys_ntp"; then
                         sync_success=1
                         log "系统 NTP 时间同步成功"
-                    else
-                        log "系统 NTP 同步失败"
                     fi
                 fi
-
-                # 2. 兜底：使用阿里云 IP 避免 DNS 解析问题
                 if [ $sync_success -eq 0 ]; then
-                    ali_ntp_ip="203.107.6.88"
-                    log "尝试阿里云 IP 兜底同步 (Server: $ali_ntp_ip)..."
-                    if sync_ntp "$ali_ntp_ip"; then
+                    if sync_ntp "203.107.6.88"; then
                         sync_success=1
                         log "阿里云 IP 时间同步成功"
-                    else
-                        log "阿里云 IP 同步失败"
                     fi
                 fi
-
-                # 3. 最后手段：HTTP 协议对时
                 if [ $sync_success -eq 0 ]; then
-                    log "尝试 HTTP 协议对时..."
                     if sync_http; then
                         sync_success=1
                         log "HTTP 时间同步成功"
                     fi
                 fi
-
                 if [ $sync_success -eq 1 ]; then
                     touch /tmp/feiyoung_time_verified
-                else
-                    log "所有时间同步手段均失败，保留未验证状态"
                 fi
             fi
 
-            # 检测是否首次上线，触发用户自定义联动脚本
             if [ ! -f /tmp/feiyoung_online ]; then
                 touch /tmp/feiyoung_online
                 if [ -x "/etc/feiyoung.user" ]; then
@@ -545,9 +451,6 @@ main() {
                     /etc/feiyoung.user online >/dev/null 2>&1 &
                 fi
             fi
-
-            # 发送心跳
-            heart
         else
             log "网络断开，开始重连"
             update_status "运行中 - 正在重连..."
@@ -558,13 +461,20 @@ main() {
                     /etc/feiyoung.user offline >/dev/null 2>&1 &
                 fi
             fi
-            if init_network; then
-                login
+
+            # 确保默认路由存在，然后发现门户并登录
+            ensure_default_route
+            if discover_portal; then
+                if init_network; then
+                    login
+                else
+                    update_status "运行中 - 连接认证门户失败"
+                fi
             else
-                update_status "运行中 - 连接认证服务器失败"
+                update_status "运行中 - 未发现认证门户"
             fi
         fi
-        
+
         sleep "$check_interval"
     done
 }

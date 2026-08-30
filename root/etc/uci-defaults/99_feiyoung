@@ -1,35 +1,51 @@
 #!/bin/sh
 
-# 配置迁移：添加新增的配置项
-if ! uci -q get feiyoung.general.password_seed >/dev/null; then
-    uci set feiyoung.general.password_seed=''
-    uci commit feiyoung
+# v2 配置迁移：字段重命名 + 清理废弃项
+# password_seed -> password（旧 6 位原始密码即新静态密码）
+if uci -q get feiyoung.general.password_seed >/dev/null; then
+    OLD_SEED=$(uci -q get feiyoung.general.password_seed)
+    if [ -z "$(uci -q get feiyoung.general.password)" ]; then
+        uci set feiyoung.general.password="$OLD_SEED"
+    fi
+    uci delete feiyoung.general.password_seed
 fi
+
+# 删除废弃的认证参数（旧 XML 接口用）
+for attr in system prefix AidcAuthAttr3 AidcAuthAttr4 AidcAuthAttr5 AidcAuthAttr6 AidcAuthAttr8 AidcAuthAttr15 AidcAuthAttr22 AidcAuthAttr23; do
+    uci -q delete feiyoung.general.$attr
+done
+
+# 删除废弃的每日密码列表
+uci -q delete feiyoung.daily
+
+# 补充新字段默认值
+[ -z "$(uci -q get feiyoung.general.passType)" ] && uci set feiyoung.general.passType='1'
+[ -z "$(uci -q get feiyoung.general.gateway)" ] && uci set feiyoung.general.gateway='http://58.53.199.144:8001'
+
+uci commit feiyoung
 
 # 合并 opkg 备份的配置文件（如果存在）
 if [ -f /etc/config/feiyoung-opkg ]; then
-    # 临时重命名以便 uci 工具识别（uci 不支持带连字符的文件名作为配置名）
     mv /etc/config/feiyoung-opkg /etc/config/feiyoung_backup
-    
-    # 使用 uci 读取旧配置，完美支持多行值
+
     OLD_ENABLED=$(uci -q get feiyoung_backup.general.enabled)
     OLD_USERNAME=$(uci -q get feiyoung_backup.general.username)
-    OLD_PWD_LIST=$(uci -q get feiyoung_backup.daily.password_list)
-    
-    # 恢复到新配置中
+    OLD_PWD=$(uci -q get feiyoung_backup.general.password)
+    [ -z "$OLD_PWD" ] && OLD_PWD=$(uci -q get feiyoung_backup.general.password_seed)
+
     [ -n "$OLD_ENABLED" ] && uci set feiyoung.general.enabled="$OLD_ENABLED"
     [ -n "$OLD_USERNAME" ] && uci set feiyoung.general.username="$OLD_USERNAME"
-    [ -n "$OLD_PWD_LIST" ] && uci set feiyoung.daily.password_list="$OLD_PWD_LIST"
-    
+    [ -n "$OLD_PWD" ] && uci set feiyoung.general.password="$OLD_PWD"
+
     uci commit feiyoung
-    
-    # 清理临时文件
     rm -f /etc/config/feiyoung_backup
 fi
 
-# 确保脚本有执行权限（虽然 opkg 会处理，但以防万一）
+# 删除废弃的每日密码计算脚本
+rm -f /usr/share/feiyoung/calc_pwd.lua
+
+# 确保脚本有执行权限
 chmod +x /usr/bin/feiyoung.sh 2>/dev/null
-chmod +x /usr/share/feiyoung/calc_pwd.lua 2>/dev/null
 
 # 重载 rpcd 以应用新的 ACL 权限（忽略错误）
 [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload 2>/dev/null

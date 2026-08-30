@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-feiyoung
-PKG_VERSION:=1.9.2
+PKG_VERSION:=2.0.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=chizukuo <chizukuo@icloud.com>
@@ -33,22 +33,19 @@ endef
 define Package/luci-app-feiyoung/install
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./root/etc/config/feiyoung $(1)/etc/config/feiyoung
-	
+
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./root/etc/init.d/feiyoung $(1)/etc/init.d/feiyoung
-	
+
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./root/usr/bin/feiyoung.sh $(1)/usr/bin/feiyoung.sh
-	
+
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-feiyoung.json $(1)/usr/share/rpcd/acl.d/luci-app-feiyoung.json
-	
-	$(INSTALL_DIR) $(1)/usr/share/feiyoung
-	$(INSTALL_BIN) ./root/usr/share/feiyoung/calc_pwd.lua $(1)/usr/share/feiyoung/calc_pwd.lua
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
 	$(INSTALL_DATA) ./luasrc/controller/feiyoung.lua $(1)/usr/lib/lua/luci/controller/feiyoung.lua
-	
+
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/feiyoung
 	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/feiyoung/general.js $(1)/www/luci-static/resources/view/feiyoung/general.js
 
