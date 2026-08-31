@@ -198,10 +198,11 @@ get_config() {
 discover_portal() {
     local site loc
     # 未认证时 DNS 不可用，用纯 IP 触发 NAS 的 HTTP 重定向
-    for site in "http://223.5.5.5" "http://119.29.29.29" "http://114.114.114.114" "http://1.1.1.1"; do
+    for site in "http://223.5.5.5" "http://119.29.29.29" "http://114.114.114.114"; do
         loc=$(curl $CURL_OPTS -A "$UA" -D - -o /dev/null "$site" 2>/dev/null \
             | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
-        if [ -n "$loc" ] && echo "$loc" | grep -q "http"; then
+        # 只接受门户地址（带 userip= 参数），避免误接受目标站点自身的重定向
+        if [ -n "$loc" ] && echo "$loc" | grep -q "userip="; then
             PORTAL_URL="$loc"
             return 0
         fi
