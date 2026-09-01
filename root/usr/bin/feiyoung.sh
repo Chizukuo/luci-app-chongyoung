@@ -131,7 +131,8 @@ cleanup() {
         rm -f /tmp/feiyoung_wan_paused
     fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 0' INT TERM
 
 # log: 写入系统日志（tag: feiyoung）
 log() {
@@ -382,6 +383,9 @@ main() {
     rm -f /tmp/feiyoung_time_verified
 
     while true; do
+        # 每个循环重新读取配置，确保配置变更即时生效（修复 procd reload 不触发重启的问题）
+        get_config
+
         if check_pause_time; then
             update_status "休眠中 (计划任务 $pause_start - $pause_end)"
             if [ -f /tmp/feiyoung_online ]; then
