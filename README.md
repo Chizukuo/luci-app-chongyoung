@@ -1,7 +1,11 @@
 # luci-app-feiyoung
 
-[![OpenWrt](https://img.shields.io/badge/OpenWrt-21.02%2B-blue.svg)](https://openwrt.org/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/Chizukuo/luci-app-feiyoung?color=brightgreen)](https://github.com/Chizukuo/luci-app-feiyoung/releases)
+[![OpenWrt](https://img.shields.io/badge/OpenWrt-21.02%20~%2025.12%2B-blue.svg)](https://openwrt.org/)
+[![Architecture](https://img.shields.io/badge/Arch-All%20Architectures-orange.svg)]()
+[![Package](https://img.shields.io/badge/Package-IPK%20%7C%20APK-purple.svg)]()
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/Chizukuo/luci-app-feiyoung?style=flat&color=yellow)](https://github.com/Chizukuo/luci-app-feiyoung/stargazers)
 
 OpenWrt LuCI support for FeiYoung Campus Network Auto Login.  
 专为湖北电信飞Young校园网设计的 OpenWrt 自动登录插件，提供原生的 LuCI 控制界面与高可用的后台守护进程。
