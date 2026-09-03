@@ -197,12 +197,24 @@ get_config() {
 # discover_portal: 通过访问普通 HTTP 站点触发重定向，获取完整门户地址（含参数）
 # 返回：0 成功（PORTAL_URL 已设置），1 失败
 discover_portal() {
-    local site loc
-    # 未认证时 DNS 不可用，用纯 IP 触发 NAS 的 HTTP 重定向
+    local site loc host ip
+    # 1. 纯 IP 触发 NAS 重定向（未认证时 DNS 不可用，纯 IP 最可靠）
     for site in "http://223.5.5.5" "http://119.29.29.29" "http://114.114.114.114"; do
         loc=$(curl $CURL_OPTS -A "$UA" -D - -o /dev/null "$site" 2>/dev/null \
             | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
         # 只接受门户地址（带 userip= 参数），避免误接受目标站点自身的重定向
+        if [ -n "$loc" ] && echo "$loc" | grep -q "userip="; then
+            PORTAL_URL="$loc"
+            return 0
+        fi
+    done
+    # 2. 标准门户探测 URL（Windows/Android NCSI），用 DHCP 纯 DNS 解析域名（绕过未认证时不可用的 DoH）
+    for site in "www.msftconnecttest.com/redirect" "connectivitycheck.gstatic.com/generate_204"; do
+        host="${site%%/*}"
+        ip=$(nslookup "$host" 202.103.44.150 2>/dev/null | awk '/^Address:/ {print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+        [ -z "$ip" ] && continue
+        loc=$(curl $CURL_OPTS -A "$UA" -H "Host: $host" -D - -o /dev/null "http://${ip}/${site#*/}" 2>/dev/null \
+            | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
         if [ -n "$loc" ] && echo "$loc" | grep -q "userip="; then
             PORTAL_URL="$loc"
             return 0
