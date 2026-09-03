@@ -473,9 +473,11 @@ main() {
                 if init_network; then
                     login
                 else
+                    log "重连失败：无法获取认证参数（连接门户失败）"
                     update_status "运行中 - 连接认证门户失败"
                 fi
             else
+                log "重连失败：未发现认证门户（NAS 未重定向）"
                 update_status "运行中 - 未发现认证门户"
             fi
         fi
