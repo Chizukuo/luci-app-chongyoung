@@ -147,16 +147,29 @@ ensure_default_route() {
 
 # check_gateway_alive: 检查 WAN 网关二层 ARP 连通性
 check_gateway_alive() {
+    # 若 WAN 口尚未处于 UP 状态，说明正在申请 DHCP 或未就绪，绝不判定为网关失效
+    local wan_up=$(ifstatus wan 2>/dev/null | sed -n 's/.*"up": *\([a-z]*\).*/\1/p' | head -1)
+    [ "$wan_up" != "true" ] && return 0
     local gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
-    [ -z "$gw" ] && return 1
+    [ -z "$gw" ] && return 0
+
     if ip neigh show dev wan 2>/dev/null | grep -E "^$gw " | grep -q -E "INCOMPLETE|FAILED"; then
         return 1
     fi
     return 0
 }
 
-# renew_wan: 重置 WAN 接口并重新请求 DHCP 租约（用于自愈失效租约）
+last_renew_time=0
+last_keepalive_time=0
+# renew_wan: 重置 WAN 接口并重新请求 DHCP 租约（带 60s 冷却保护，防止触发交换机 DHCP 泛洪限速）
 renew_wan() {
+    local now=$(date +%s)
+    if [ $((now - last_renew_time)) -lt 60 ]; then
+        log "WAN 口最近已执行过重置，处于 60s 冷却保护中，跳过重置..."
+        return 0
+    fi
+    last_renew_time=$now
+
     log "检测到上游网关不通或租约失效，正在重置 WAN 口并重新请求 DHCP..."
     update_status "运行中 - 正在重置 WAN 口 DHCP..."
     ifup wan >/dev/null 2>&1
@@ -212,9 +225,9 @@ discover_portal() {
     local site loc host ip
     PORTAL_URL=""
 
-    # 1. 纯 IP 触发 NAS 重定向（未认证时 DNS 不可用，纯 IP 最可靠）
+    # 1. 纯 IP 触发 NAS 重定向（本地 NAS 拦截响应极快，设置 2s 超时加速探测）
     for site in "http://223.5.5.5" "http://119.29.29.29" "http://114.114.114.114"; do
-        loc=$(curl $CURL_OPTS -A "$UA" -D - -o /dev/null "$site" 2>/dev/null \
+        loc=$(curl -s --connect-timeout 2 --max-time 3 -A "$UA" -D - -o /dev/null "$site" 2>/dev/null \
             | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
         # 只接受门户地址（带 userip= 参数），避免误接受目标站点自身的重定向
         if [ -n "$loc" ] && echo "$loc" | grep -q "userip="; then
@@ -233,7 +246,7 @@ discover_portal() {
         host="${site%%/*}"
         ip=$(nslookup "$host" "$dns_server" 2>/dev/null | awk '/^Address:/ {print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
         [ -z "$ip" ] && continue
-        loc=$(curl $CURL_OPTS -A "$UA" -H "Host: $host" -D - -o /dev/null "http://${ip}/${site#*/}" 2>/dev/null \
+        loc=$(curl -s --connect-timeout 2 --max-time 3 -A "$UA" -H "Host: $host" -D - -o /dev/null "http://${ip}/${site#*/}" 2>/dev/null \
             | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
         if [ -n "$loc" ] && echo "$loc" | grep -q "userip="; then
             PORTAL_URL="$loc"
@@ -467,20 +480,41 @@ main() {
             fi
         fi
 
-        # 网络检测（增加 1 秒重试复测，防止校园网瞬时丢包抖动误触离线）
+        # 网络检测：ICMP Ping + HTTP 状态码双重研判，防止高峰期丢包误判并精准识别机房 302 踢线
         local is_online=0
         if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 || ping -c 1 -W 2 119.29.29.29 >/dev/null 2>&1; then
             is_online=1
         else
-            sleep 1
-            if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 || ping -c 1 -W 2 119.29.29.29 >/dev/null 2>&1; then
+            # ICMP 丢包时，采用 HTTP 探测进一步研判真实网络连通性
+            local http_code
+            http_code=$(curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" "http://223.5.5.5" 2>/dev/null)
+            if [ "$http_code" = "200" ] || [ "$http_code" = "204" ] || [ "$http_code" = "404" ]; then
                 is_online=1
+            elif [ "$http_code" = "302" ] || [ "$http_code" = "301" ]; then
+                # 机房网关拦截重定向，确认已被踢下线
+                is_online=0
+            else
+                # HTTP 也无响应，等待 1 秒复测一次 Ping
+                sleep 1
+                if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 || ping -c 1 -W 2 119.29.29.29 >/dev/null 2>&1; then
+                    is_online=1
+                fi
             fi
         fi
 
         if [ "$is_online" = "1" ]; then
             portal_fail_count=0
             update_status "运行中 - 网络正常"
+
+            # 定时保活打卡：每隔 5 分钟轻量访问一次门户 logon 页面，刷新 BRAS 空闲会话计时器，防止机房静默超时踢线
+            local now=$(date +%s)
+            if [ $((now - last_keepalive_time)) -ge 300 ]; then
+                last_keepalive_time=$now
+                if [ -f "$COOKIE_JAR" ]; then
+                    curl -s --connect-timeout 3 --max-time 5 -b "$COOKIE_JAR" \
+                        "http://58.53.199.144:8001/style/school_hbct/pc/logon.jsp" >/dev/null 2>&1 &
+                fi
+            fi
 
             if [ ! -f /tmp/feiyoung_time_verified ]; then
                 sync_success=0
@@ -562,7 +596,11 @@ main() {
             fi
         fi
 
-        sleep "$check_interval" &
+        # 在线时按 check_interval（默认30秒）轮询；离线/重连时按 5 秒极速重试，实现断网秒级自愈
+        local sleep_time="$check_interval"
+        [ "$is_online" != "1" ] && sleep_time=5
+
+        sleep "$sleep_time" &
         wait $!
     done
 }
