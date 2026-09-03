@@ -22,11 +22,11 @@ get_5g_radios() {
         local channel=$(uci -q get wireless.$dev.channel)
 
         local is_5g=0
-        if [ "$band" = "5g" ]; then
+        if [ "$band" = "5g" ] || [ "$band" = "6g" ]; then
             is_5g=1
         elif [ "$band" = "2g" ]; then
             is_5g=0
-        elif echo "$hwmode" | grep -q -E "a|ac|ax"; then
+        elif [ "$hwmode" != "auto" ] && echo "$hwmode" | grep -q -E "11a|11ac|11ax|11be"; then
             is_5g=1
         elif [ -n "$channel" ] && [ "$channel" != "auto" ] && [ "$channel" -gt 14 ] 2>/dev/null; then
             is_5g=1
@@ -38,40 +38,26 @@ get_5g_radios() {
     done
 }
 
-# disable_5g: 临时禁用 5G 无线广播
+# disable_5g: 临时禁用 5G 无线广播（使用内存命令，避免 Flash 闪存磨损与夜间重启后永久丢失）
 disable_5g() {
     local dev
-    local changed=0
     rm -f /tmp/feiyoung_disabled_radios
     for dev in $(get_5g_radios); do
-        if [ "$(uci -q get wireless.$dev.disabled)" != "1" ]; then
-            log "正在临时关闭 5G 无线设备: $dev"
-            echo "$dev" >> /tmp/feiyoung_disabled_radios
-            uci set wireless.$dev.disabled='1'
-            changed=1
-        fi
+        log "正在临时关闭 5G 无线设备: $dev"
+        echo "$dev" >> /tmp/feiyoung_disabled_radios
+        wifi down "$dev" >/dev/null 2>&1
     done
-    if [ "$changed" = "1" ]; then
-        uci commit wireless
-        wifi reload >/dev/null 2>&1 || wifi >/dev/null 2>&1
-    fi
 }
 
 # enable_5g: 恢复被临时禁用的 5G 无线广播
 enable_5g() {
     local dev
-    local changed=0
     if [ -f /tmp/feiyoung_disabled_radios ]; then
         for dev in $(cat /tmp/feiyoung_disabled_radios); do
             log "正在恢复 5G 无线设备: $dev"
-            uci delete wireless.$dev.disabled
-            changed=1
+            wifi up "$dev" >/dev/null 2>&1
         done
         rm -f /tmp/feiyoung_disabled_radios
-    fi
-    if [ "$changed" = "1" ]; then
-        uci commit wireless
-        wifi reload >/dev/null 2>&1 || wifi >/dev/null 2>&1
     fi
 }
 
@@ -102,7 +88,7 @@ disable_lan_ports() {
     for port in $(get_lan_interfaces); do
         log "正在临时关闭有线网口: $port"
         echo "$port" >> /tmp/feiyoung_disabled_lan_ports
-        ifconfig "$port" down >/dev/null 2>&1
+        ip link set "$port" down 2>/dev/null || ifconfig "$port" down 2>/dev/null
     done
 }
 
@@ -112,7 +98,7 @@ enable_lan_ports() {
     if [ -f /tmp/feiyoung_disabled_lan_ports ]; then
         for port in $(cat /tmp/feiyoung_disabled_lan_ports); do
             log "正在恢复有线网口: $port"
-            ifconfig "$port" up >/dev/null 2>&1
+            ip link set "$port" up 2>/dev/null || ifconfig "$port" up 2>/dev/null
         done
         rm -f /tmp/feiyoung_disabled_lan_ports
     fi
@@ -125,7 +111,7 @@ cleanup() {
     if [ -f /tmp/feiyoung_wan_paused ]; then
         enable_5g
         enable_lan_ports
-        ifconfig br-lan up >/dev/null 2>&1
+        ip link set br-lan up 2>/dev/null || ifconfig br-lan up 2>/dev/null
         wifi up >/dev/null 2>&1
         ifup wan >/dev/null 2>&1
         rm -f /tmp/feiyoung_wan_paused
@@ -146,17 +132,43 @@ update_status() {
 
 # get_base: 从完整 URL 提取 base（scheme://host:port）
 get_base() {
-    echo "$1" | sed -n 's#^\(http://[^/?]*\).*#\1#p'
+    echo "$1" | sed -n 's#^\(https\?://[^/?]*\).*#\1#p'
 }
 
 # ensure_default_route: 确保存在默认路由（校园网 DHCP 偶发不下发网关到内核）
 ensure_default_route() {
-    ip route show default >/dev/null 2>&1 && return 0
+    [ -n "$(ip route show default 2>/dev/null)" ] && return 0
     local gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
     [ -z "$gw" ] && gw="100.64.0.1"
     if ip route add default via "$gw" dev wan >/dev/null 2>&1; then
         log "已补充默认路由 via $gw"
     fi
+}
+
+# check_gateway_alive: 检查 WAN 网关二层 ARP 连通性
+check_gateway_alive() {
+    local gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
+    [ -z "$gw" ] && return 1
+    if ip neigh show dev wan 2>/dev/null | grep -E "^$gw " | grep -q -E "INCOMPLETE|FAILED"; then
+        return 1
+    fi
+    return 0
+}
+
+# renew_wan: 重置 WAN 接口并重新请求 DHCP 租约（用于自愈失效租约）
+renew_wan() {
+    log "检测到上游网关不通或租约失效，正在重置 WAN 口并重新请求 DHCP..."
+    update_status "运行中 - 正在重置 WAN 口 DHCP..."
+    ifup wan >/dev/null 2>&1
+    local count=0
+    while [ $count -lt 8 ]; do
+        sleep 1 &
+        wait $!
+        local gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
+        [ -n "$gw" ] && break
+        count=$((count + 1))
+    done
+    ensure_default_route
 }
 
 # get_config: 从 UCI 读取脚本所需配置；若未启用则退出脚本
@@ -198,6 +210,8 @@ get_config() {
 # 返回：0 成功（PORTAL_URL 已设置），1 失败
 discover_portal() {
     local site loc host ip
+    PORTAL_URL=""
+
     # 1. 纯 IP 触发 NAS 重定向（未认证时 DNS 不可用，纯 IP 最可靠）
     for site in "http://223.5.5.5" "http://119.29.29.29" "http://114.114.114.114"; do
         loc=$(curl $CURL_OPTS -A "$UA" -D - -o /dev/null "$site" 2>/dev/null \
@@ -208,10 +222,16 @@ discover_portal() {
             return 0
         fi
     done
-    # 2. 标准门户探测 URL（Windows/Android NCSI），用 DHCP 纯 DNS 解析域名（绕过未认证时不可用的 DoH）
+
+    # 2. 标准门户探测 URL（Windows/Android NCSI），优先使用 DHCP 分配的 DNS 解析
+    local dns_server=""
+    [ -f /tmp/resolv.conf.d/resolv.conf.auto ] && dns_server=$(awk '/^nameserver/ {print $2; exit}' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null)
+    [ -z "$dns_server" ] && [ -f /tmp/resolv.conf.auto ] && dns_server=$(awk '/^nameserver/ {print $2; exit}' /tmp/resolv.conf.auto 2>/dev/null)
+    [ -z "$dns_server" ] && dns_server="202.103.44.150"
+
     for site in "www.msftconnecttest.com/redirect" "connectivitycheck.gstatic.com/generate_204"; do
         host="${site%%/*}"
-        ip=$(nslookup "$host" 202.103.44.150 2>/dev/null | awk '/^Address:/ {print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+        ip=$(nslookup "$host" "$dns_server" 2>/dev/null | awk '/^Address:/ {print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
         [ -z "$ip" ] && continue
         loc=$(curl $CURL_OPTS -A "$UA" -H "Host: $host" -D - -o /dev/null "http://${ip}/${site#*/}" 2>/dev/null \
             | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
@@ -351,11 +371,16 @@ sync_http() {
 
     for site in $sites; do
         http_header=$(curl -sI --connect-timeout 3 "$site")
-        http_date=$(echo "$http_header" | grep -i "^Date:" | sed 's/Date: //i' | tr -d '\r')
+        http_date=$(echo "$http_header" | grep -i "^Date:" | sed 's/^[Dd]ate: *//' | tr -d '\r')
 
         if [ -n "$http_date" ]; then
-            date -s "$http_date" >/dev/null 2>&1
-            [ $? -eq 0 ] && return 0
+            # 1. 优先使用 BusyBox date -D 转换格式并设置 UTC 时间
+            local formatted_date=$(date -u -D "%a, %d %b %Y %H:%M:%S GMT" -d "$http_date" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
+            if [ -n "$formatted_date" ]; then
+                date -u -s "$formatted_date" >/dev/null 2>&1 && return 0
+            fi
+            # 2. 回退到标准 date -s（GNU date 兼容固件）
+            date -s "$http_date" >/dev/null 2>&1 && return 0
         fi
     done
 
@@ -365,11 +390,13 @@ sync_http() {
 # check_pause_time: 检查是否在休眠时间
 check_pause_time() {
     [ "$pause_enabled" != "1" ] && return 1
-    [ -z "$pause_start" ] || [ -z "$pause_end" ] && return 1
+    if [ -z "$pause_start" ] || [ -z "$pause_end" ]; then
+        return 1
+    fi
 
-    current_year=$(date +%Y)
-    [ "$current_year" -lt 2019 ] && return 1
-    [ -f /tmp/feiyoung_time_verified ] || return 1
+    local current_year=$(date +%Y)
+    # 若年份小于 2024 且未经验证，判定为 1970 等未授时状态，避免误判休眠
+    [ "$current_year" -lt 2024 ] && [ ! -f /tmp/feiyoung_time_verified ] && return 1
 
     current_time=$(date +%H%M)
     start_time=$(echo "$pause_start" | tr -d ':')
@@ -393,6 +420,7 @@ main() {
     get_config
 
     rm -f /tmp/feiyoung_time_verified
+    local portal_fail_count=0
 
     while true; do
         # 每个循环重新读取配置，确保配置变更即时生效（修复 procd reload 不触发重启的问题）
@@ -416,9 +444,16 @@ main() {
                     disable_lan_ports
                     touch /tmp/feiyoung_wan_paused
                 fi
+            elif [ -f /tmp/feiyoung_wan_paused ]; then
+                log "休眠断网选项已关闭，正在恢复网络接口..."
+                enable_5g
+                enable_lan_ports
+                ifup wan
+                rm -f /tmp/feiyoung_wan_paused
             fi
 
-            sleep 60
+            sleep 60 &
+            wait $!
             continue
         else
             if [ -f /tmp/feiyoung_wan_paused ]; then
@@ -427,12 +462,24 @@ main() {
                 enable_lan_ports
                 ifup wan
                 rm -f /tmp/feiyoung_wan_paused
-                sleep 10
+                sleep 10 &
+                wait $!
             fi
         fi
 
-        # 网络检测
+        # 网络检测（增加 1 秒重试复测，防止校园网瞬时丢包抖动误触离线）
+        local is_online=0
         if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 || ping -c 1 -W 2 119.29.29.29 >/dev/null 2>&1; then
+            is_online=1
+        else
+            sleep 1
+            if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1 || ping -c 1 -W 2 119.29.29.29 >/dev/null 2>&1; then
+                is_online=1
+            fi
+        fi
+
+        if [ "$is_online" = "1" ]; then
+            portal_fail_count=0
             update_status "运行中 - 网络正常"
 
             if [ ! -f /tmp/feiyoung_time_verified ]; then
@@ -479,9 +526,16 @@ main() {
                 fi
             fi
 
-            # 确保默认路由存在，然后发现门户并登录
+            # 确保默认路由存在
             ensure_default_route
+
+            # 检查网关二层连通性，若已失效则主动刷新 WAN DHCP 租约
+            if ! check_gateway_alive; then
+                renew_wan
+            fi
+
             if discover_portal; then
+                portal_fail_count=0
                 if init_network; then
                     login
                 else
@@ -489,12 +543,27 @@ main() {
                     update_status "运行中 - 连接认证门户失败"
                 fi
             else
-                log "重连失败：未发现认证门户（NAS 未重定向）"
+                portal_fail_count=$((portal_fail_count + 1))
+                log "重连失败：未发现认证门户（NAS 未重定向，连续失败 $portal_fail_count 次）"
                 update_status "运行中 - 未发现认证门户"
+                # 若连续 2 次未能发现门户，说明当前 DHCP 租约可能已被上游废弃，主动重置 WAN 接口以自愈
+                if [ "$portal_fail_count" -ge 2 ]; then
+                    renew_wan
+                    portal_fail_count=0
+                    if discover_portal; then
+                        if init_network; then
+                            login
+                        else
+                            log "重连失败：无法获取认证参数（连接门户失败）"
+                            update_status "运行中 - 连接认证门户失败"
+                        fi
+                    fi
+                fi
             fi
         fi
 
-        sleep "$check_interval"
+        sleep "$check_interval" &
+        wait $!
     done
 }
 

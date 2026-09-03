@@ -24,7 +24,13 @@ var callInitAction = rpc.declare({
 
 // 主视图：通过 render() 构建配置页面并返回 DOM 节点
 return view.extend({
-	render: function() {
+	load: function() {
+		return fs.read('/tmp/feiyoung_status').catch(function() {
+			return '';
+		});
+	},
+
+	render: function(status_initial) {
 		var m, s, o;
 
 		m = new form.Map('feiyoung', _('FeiYoung Network'), _('Configuration for FeiYoung Campus Network Auto Login'));
@@ -33,23 +39,19 @@ return view.extend({
 		s = m.section(form.TypedSection, 'global', _('Status'));
 		s.anonymous = true;
 
+		var initial_status = status_initial ? status_initial.trim() : _('Not Running');
+		var initial_color = 'green';
+		if (initial_status.indexOf('重连') !== -1 || initial_status.indexOf('失败') !== -1) {
+			initial_color = 'red';
+		} else if (initial_status.indexOf('休眠') !== -1) {
+			initial_color = 'orange';
+		} else if (initial_status === _('Not Running')) {
+			initial_color = 'grey';
+		}
+
 		o = s.option(form.DummyValue, '_status', _('Current Status'));
 		o.rawhtml = true;
-		o.default = '<em>' + _('Collecting data...') + '</em>';
-		o.cfgvalue = function(section_id) {
-			return fs.read('/tmp/feiyoung_status').then(function(status) {
-				status = status ? status.trim() : _('Not Running');
-				var color = 'green';
-				if (status.indexOf('重连') !== -1 || status.indexOf('失败') !== -1) {
-					color = 'red';
-				} else if (status.indexOf('休眠') !== -1) {
-					color = 'orange';
-				}
-				return '<span style="color:' + color + '; font-weight:bold">' + status + '</span>';
-			}).catch(function() {
-				return '<span style="color:grey">' + _('Not Running') + '</span>';
-			});
-		};
+		o.default = '<span id="feiyoung_status_text" style="color:' + initial_color + '; font-weight:bold">' + initial_status + '</span>';
 
 		o = s.option(form.Button, '_restart', _('Action'));
 		o.inputtitle = _('Restart Service');
@@ -69,16 +71,19 @@ return view.extend({
 		// 定期轮询状态文件并更新界面
 		poll.add(function() {
 			return fs.read('/tmp/feiyoung_status').then(function(status) {
-				var view = document.getElementById('cbi-feiyoung-global-_status');
-				if (view) {
+				var el = document.getElementById('feiyoung_status_text');
+				if (el) {
 					status = status ? status.trim() : _('Not Running');
 					var color = 'green';
 					if (status.indexOf('重连') !== -1 || status.indexOf('失败') !== -1) {
 						color = 'red';
 					} else if (status.indexOf('休眠') !== -1) {
 						color = 'orange';
+					} else if (status === _('Not Running')) {
+						color = 'grey';
 					}
-					view.innerHTML = '<div class="cbi-value-field"><span style="color:' + color + '; font-weight:bold">' + status + '</span></div>';
+					el.textContent = status;
+					el.style.color = color;
 				}
 			}).catch(function() {});
 		});
@@ -164,7 +169,7 @@ return view.extend({
 				E('span', {}, _('Project hosted on ')),
 				E('a', { 'href': 'https://github.com/Chizukuo/luci-app-feiyoung', 'target': '_blank', 'style': 'color: #0069b4; text-decoration: none; font-weight: bold;' }, 'GitHub'),
 				E('span', {}, ' | '),
-				E('span', {}, 'v2.0.0')
+				E('span', {}, 'v2.1.0')
 			]);
 			nodes.appendChild(footer);
 			return nodes;

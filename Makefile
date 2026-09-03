@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-feiyoung
-PKG_VERSION:=2.0.0
+PKG_VERSION:=2.1.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=chizukuo <chizukuo@icloud.com>
@@ -42,6 +42,9 @@ define Package/luci-app-feiyoung/install
 
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-feiyoung.json $(1)/usr/share/rpcd/acl.d/luci-app-feiyoung.json
+
+	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
+	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-feiyoung.json $(1)/usr/share/luci/menu.d/luci-app-feiyoung.json
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
 	$(INSTALL_DATA) ./luasrc/controller/feiyoung.lua $(1)/usr/lib/lua/luci/controller/feiyoung.lua

@@ -1,0 +1,13 @@
+﻿{
+	"admin/services/feiyoung": {
+		"title": "FeiYoung Network",
+		"action": {
+			"type": "view",
+			"path": "feiyoung/general"
+		},
+		"order": 60,
+		"depends": {
+			"uci": { "feiyoung": true }
+		}
+	}
+}

@@ -12,7 +12,11 @@ return baseclass.extend({
 	},
 
 	render: function(status) {
-		status = status ? status.trim() : _('Not Running');
+		if (!status || status.trim() === '') {
+			return null;
+		}
+
+		status = status.trim();
 		var color = '#5cb85c'; // Green
 		
 		if (status.indexOf('重连') !== -1 || status.indexOf('失败') !== -1) {
