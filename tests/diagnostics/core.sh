@@ -6,9 +6,25 @@ tmp_dir="$(mktemp -d "$test_parent/.core.XXXXXX")"
 case "$tmp_dir" in "$test_parent"/*) ;; *) exit 1 ;; esac
 trap 'case "$tmp_dir" in "$test_parent"/*) rm -rf -- "$tmp_dir" ;; esac' EXIT
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
-assert_eq() { [ "$1" = "$2" ] || fail "$3"; }
-assert_contains() { grep -Fq -- "$2" "$1" || fail "missing expected text: $2"; }
-assert_not_contains() { ! grep -Fq -- "$2" "$1" || fail "forbidden text found: $2"; }
+assertions=0
+assert_eq() {
+    [ "$1" = "$2" ] || fail "$3"
+    assertions=$((assertions + 1))
+}
+assert_true() {
+    local label="$1"
+    shift
+    "$@" || fail "$label"
+    assertions=$((assertions + 1))
+}
+assert_contains() {
+    grep -Fq -- "$2" "$1" || fail "missing expected text: $2"
+    assertions=$((assertions + 1))
+}
+assert_not_contains() {
+    ! grep -Fq -- "$2" "$1" || fail "forbidden text found: $2"
+    assertions=$((assertions + 1))
+}
 logger() { printf '%s\n' "$*" >> "$tmp_dir/log"; }
 log() { printf '%s\n' "$*" >> "$tmp_dir/log"; }
 source <(awk '/^diag_url\(\)/,/^}/' "$source_file")
@@ -50,6 +66,7 @@ assert_eq "$(<"$tmp_dir/result")" 1 'retry decision'; assert_eq "$(grep -c '^pin
 run_probe '1 1 1 1' 000
 assert_eq "$(<"$tmp_dir/result")" 0 'all failed decision'; assert_eq "$(grep -c '^ping ' "$tmp_dir/trace")" 4 'all failed ping count'; assert_eq "$(grep -c '^sleep 1$' "$tmp_dir/trace")" 1 'all failed sleep count'
 source <(awk '/^get_base\(\)/,/^}/' "$source_file")
+source <(awk '/^clear_auth_state\(\)/,/^}/' "$source_file")
 source <(awk '/^portal_url\(\)/,/^}/' "$source_file")
 source <(awk '/^login\(\)/,/^}/' "$source_file")
 COOKIE_JAR="$tmp_dir/cookie"; : > "$COOKIE_JAR"; CURL_OPTS=''; UA=test; gateway='http://portal.test'
@@ -67,17 +84,37 @@ curl() {
     case "$CURL_MODE" in
         success) printf 'HTTP/1.1 302 Found\r\nLocation: /style/school_hbct/pc/logon.jsp\r\n\r\n'; return 0 ;;
         failure) printf 'HTTP/1.1 302 Found\r\nLocation: /login_fail.jsp\r\n\r\n'; return 0 ;;
+        unknown) printf 'HTTP/1.1 200 OK\r\n\r\n'; return 0 ;;
         error) return 28 ;;
         *) return 1 ;;
     esac
 }
-run_login() { : > "$tmp_dir/login_data"; auth_ready=1; auth_client_type=pc; paramStr=TEST_PARAM; if login; then return 0; else return 1; fi; }
+run_login() {
+    : > "$tmp_dir/login_data"
+    auth_ready=1
+    auth_client_type=pc
+    paramStr=TEST_PARAM
+    PORTAL_URL='http://portal.test/style/school_hbct/pc/index.jsp?paramStr=TEST_PARAM'
+    fyhtml='AUTH_PAGE'
+    PAGE_URL="$PORTAL_URL"
+    PAGE_BODY='AUTH_PAGE'
+    printf 'cookie\n' > "$COOKIE_JAR"
+    if login; then return 0; else return 1; fi
+}
 expected_data='UserType=1&paramStr=TEST_PARAM&pwdType=1&aidcauthtype=0&vfcodeflg=false&UserName=TEST_USER&PassWord=TEST_PASS'
 if ! run_login; then fail 'success login failed'; fi
 assert_eq "$login_attempts" 1 'success attempt count'; assert_eq "$login_successes" 1 'success count'; assert_eq "$(<"$tmp_dir/login_data")" "$expected_data" 'complete login data'
+assert_eq "$auth_ready" 1 'success auth_ready retained'; assert_eq "$paramStr" TEST_PARAM 'success paramStr retained'; assert_true 'success cookie retained' test -e "$COOKIE_JAR"
 CURL_MODE=failure; if run_login; then fail 'failure login succeeded'; fi
 assert_eq "$login_attempts" 2 'failure attempt count'; assert_eq "$login_successes" 1 'failure success count'
+assert_eq "$auth_ready" 0 'failure auth_ready reset'; assert_eq "$paramStr" '' 'failure paramStr reset'; assert_eq "$PORTAL_URL" '' 'failure PORTAL_URL reset'; assert_eq "$fyhtml" '' 'failure fyhtml reset'; assert_eq "$PAGE_URL" '' 'failure PAGE_URL reset'; assert_eq "$PAGE_BODY" '' 'failure PAGE_BODY reset'; assert_true 'failure cookie removed' test ! -e "$COOKIE_JAR"
+before_login=$(wc -l < "$tmp_dir/login_data")
+if login; then fail 'cleared failure login succeeded'; fi
+assert_eq "$before_login" "$(wc -l < "$tmp_dir/login_data")" 'cleared failure does not POST'
 CURL_MODE=error; if run_login; then fail 'curl error succeeded'; fi
 assert_eq "$login_attempts" 3 'error attempt count'; assert_eq "$login_successes" 1 'error success count'
+CURL_MODE=unknown; if run_login; then fail 'unknown login succeeded'; fi
+assert_eq "$login_attempts" 4 'unknown attempt count'; assert_eq "$login_successes" 1 'unknown success count'
+assert_eq "$auth_ready" 0 'unknown auth_ready reset'; assert_eq "$paramStr" '' 'unknown paramStr reset'; assert_eq "$PORTAL_URL" '' 'unknown PORTAL_URL reset'; assert_eq "$fyhtml" '' 'unknown fyhtml reset'; assert_eq "$PAGE_URL" '' 'unknown PAGE_URL reset'; assert_eq "$PAGE_BODY" '' 'unknown PAGE_BODY reset'; assert_true 'unknown cookie removed' test ! -e "$COOKIE_JAR"
 assert_not_contains "$tmp_dir/log" 'TEST_USER'; assert_not_contains "$tmp_dir/log" 'TEST_PASS'; assert_not_contains "$tmp_dir/log" 'TEST_PARAM'
-printf 'PASS: diagnostics privacy, probe paths, HTTP decisions, and login contract\n'
+printf 'PASS: diagnostics privacy, probe paths, HTTP decisions, and login contract assertions=%d\n' "$assertions"

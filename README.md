@@ -203,6 +203,7 @@ logread -f -e feiyoung
 │   ├── etc/init.d/feiyoung         # Procd 系统服务启动脚本
 │   ├── etc/uci-defaults/99_feiyoung  # 版本平滑升级数据迁移脚本
 │   ├── usr/bin/feiyoung.sh         # 核心后台守护进程
+│   ├── usr/bin/feiyoung-diagnose   # 只读诊断命令
 │   └── usr/share/
 │       ├── luci/menu.d/luci-app-feiyoung.json  # 现代 LuCI 菜单清单
 │       └── rpcd/acl.d/luci-app-feiyoung.json   # RPC 权限声明

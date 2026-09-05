@@ -179,6 +179,19 @@ diag() {
     logger -t feiyoung "FEIYOUNG_DIAG build=2.2.0-1 seq=$diag_seq client_type=${client_type:-pc} $*" >/dev/null 2>&1 || :
 }
 
+clear_auth_state() {
+    paramStr=""
+    PORTAL_URL=""
+    fyhtml=""
+    auth_ready=0
+    auth_client_type=""
+    PAGE_URL=""
+    PAGE_BODY=""
+    if [ -n "${COOKIE_JAR:-}" ]; then
+        rm -f -- "$COOKIE_JAR"
+    fi
+}
+
 set_client_mode() {
     case "$1" in
         mobile) client_type=mobile; UA="$MOBILE_UA"; COOKIE_JAR=/tmp/feiyoung_cookie_mobile ;;
@@ -186,7 +199,7 @@ set_client_mode() {
     esac
     umask 077
     if [ "$last_client_type" != "$client_type" ]; then
-        paramStr=""; fyhtml=""; PORTAL_URL=""; auth_ready=0; auth_client_type=""
+        clear_auth_state
         rm -f /tmp/feiyoung_cookie_pc /tmp/feiyoung_cookie_mobile
         diag "event=client_mode_changed"
     fi
@@ -404,10 +417,9 @@ fetch_portal_page() {
 # init_network: obtain a fresh token and cookie for the selected entry.
 init_network() {
     local url="$PORTAL_URL" selected_entry path bootstrap=0
-    paramStr=""; fyhtml=""; auth_ready=0; auth_client_type=""
-    rm -f "$COOKIE_JAR"
+    clear_auth_state
     [ -n "$url" ] || url="$gateway/"
-    url=$(portal_url "$url" "$gateway/") || return 1
+    url=$(portal_url "$url" "$gateway/") || { clear_auth_state; return 1; }
     url=$(mode_path "$url")
     if ! fetch_portal_page "$url" "$UA"; then
         # This portal rejects mobile UA at its root, but serves a PC frameset.
@@ -418,7 +430,7 @@ init_network() {
             { [ -n "$path" ] && [ "$path" != / ]; } || \
             ! fetch_portal_page "$gateway/" "$PC_UA"; then
             log "无法取得所选模式的认证入口"
-            rm -f "$COOKIE_JAR"
+            clear_auth_state
             return 1
         fi
         bootstrap=1
@@ -429,18 +441,18 @@ init_network() {
         *school_hbct/*/index.jsp*)
             selected_entry=$(portal_entry_from_html "$PAGE_BODY") || {
                 log "认证入口来源或路径无效"
-                rm -f "$COOKIE_JAR"
+                clear_auth_state
                 return 1
             }
             fetch_portal_page "$selected_entry" "$UA" || {
                 log "所选模式认证页面请求失败"
-                rm -f "$COOKIE_JAR"
+                clear_auth_state
                 return 1
             }
             ;;
         *)
             if [ "$bootstrap" = 1 ]; then
-                fetch_portal_page "$PAGE_URL" "$UA" || { rm -f "$COOKIE_JAR"; return 1; }
+                fetch_portal_page "$PAGE_URL" "$UA" || { clear_auth_state; return 1; }
             fi
             ;;
     esac
@@ -448,7 +460,7 @@ init_network() {
     path=${path%%[?#]*}
     if [ "$path" != "/style/school_hbct/$client_type/index.jsp" ]; then
         log "未取得所选模式的认证页面"
-        rm -f "$COOKIE_JAR"
+        clear_auth_state
         return 1
     fi
     PORTAL_URL="$PAGE_URL"
@@ -456,7 +468,7 @@ init_network() {
     paramStr=$(printf '%s' "$PORTAL_URL" | sed -n 's/.*[?&]paramStr=\([^&]*\).*/\1/p' | head -1)
     if [ -z "$paramStr" ]; then
         log "解析 paramStr 失败"
-        rm -f "$COOKIE_JAR"
+        clear_auth_state
         return 1
     fi
     auth_ready=1; auth_client_type="$client_type"
@@ -471,6 +483,7 @@ login() {
     if [ "$auth_ready" != 1 ] || [ "$auth_client_type" != "$client_type" ] || [ -z "$paramStr" ] || \
         ! portal_url "$PORTAL_URL" "$gateway/" >/dev/null; then
         log "认证参数尚未就绪"
+        clear_auth_state
         return 1
     fi
     base=$(get_base "$PORTAL_URL")
@@ -493,7 +506,7 @@ login() {
     diag "event=login_result curl_rc=$curl_rc http_status=${http_status:-unknown} location_present=$([ -n "$loc" ] && echo 1 || echo 0) cookie_present=$([ -f "$COOKIE_JAR" ] && echo 1 || echo 0)"
 
     if [ "$curl_rc" -ne 0 ]; then
-        auth_ready=0; paramStr=""
+        clear_auth_state
         return 1
     fi
     local result_url
@@ -505,13 +518,13 @@ login() {
         diag "event=login_success attempts=$login_attempts successes=$login_successes"
         return 0
     elif echo "$loc" | grep -q "login_fail.jsp"; then
-        auth_ready=0; paramStr=""
+        clear_auth_state
         log "登录失败"
         diag "event=login_failure attempts=$login_attempts successes=$login_successes"
         return 1
     else
         log "登录结果未知（已隐藏重定向内容）"
-        auth_ready=0; paramStr=""
+        clear_auth_state
         diag "event=login_unknown attempts=$login_attempts successes=$login_successes"
         return 1
     fi

@@ -7,6 +7,7 @@ src="$root/root/usr/bin/feiyoung.sh"
 # Extract only the production functions under test.  The daemon entry point is
 # deliberately never sourced: this test must not touch router services.
 source <(awk '/^get_base\(\)/,/^}/' "$src")
+source <(awk '/^clear_auth_state\(\)/,/^}/' "$src")
 source <(awk '/^mode_path\(\)/,/^}/' "$src")
 source <(awk '/^portal_url\(\)/,/^}/' "$src")
 source <(awk '/^portal_entry_from_html\(\)/,/^}/' "$src")
@@ -363,12 +364,25 @@ pass_fixture
 
 for failing_fixture in final_412 final_empty final_curl; do
     start_fixture "$failing_fixture" mobile
+    paramStr='STALE_PARAM'
+    fyhtml='STALE_HTML'
+    PAGE_URL="$gateway/stale"
+    PAGE_BODY='STALE_BODY'
+    auth_ready=1
+    auth_client_type=mobile
+    printf 'stale-cookie\n' > "$COOKIE_JAR"
     PORTAL_URL="$gateway/"
     if init_network; then
         fail 'selected final page unexpectedly accepted'
     fi
     assert_eq 0 "$auth_ready" "$failing_fixture auth_ready reset"
     assert_eq '' "$paramStr" "$failing_fixture paramStr reset"
+    assert_eq '' "$PORTAL_URL" "$failing_fixture PORTAL_URL reset"
+    assert_eq '' "$fyhtml" "$failing_fixture fyhtml reset"
+    assert_eq '' "$PAGE_URL" "$failing_fixture PAGE_URL reset"
+    assert_eq '' "$PAGE_BODY" "$failing_fixture PAGE_BODY reset"
+    assert_eq '' "$auth_client_type" "$failing_fixture auth client type reset"
+    assert_true "$failing_fixture cookie removed" test ! -e "$COOKIE_JAR"
     before_login=$(cat "$RUN_DIR/sequence")
     if login; then
         fail "$failing_fixture login unexpectedly accepted"
