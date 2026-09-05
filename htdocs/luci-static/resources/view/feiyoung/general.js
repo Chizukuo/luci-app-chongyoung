@@ -98,6 +98,12 @@ return view.extend({
 		o = s.option(form.Value, 'username', _('Phone Number'));
 		o.rmempty = false;
 
+		o = s.option(form.ListValue, 'client_type', _('认证模式'), _('选择路由器使用的网页认证模式；在下一次认证时生效；已有会话请先在校园网门户退出后重新认证。能否与另一类终端同时在线取决于校园网策略。'));
+		o.value('pc', _('PC（电脑）'));
+		o.value('mobile', _('手机'));
+		o.default = 'pc';
+		o.rmempty = false;
+
 		// Password: 6 位静态密码（直接提交，不再每日算号）
 		o = s.option(form.Value, 'password', _('Password'), _('Enter your 6-digit static password.'));
 		o.rmempty = true;
@@ -109,6 +115,10 @@ return view.extend({
 			}
 			return true;
 		};
+
+		o = s.option(form.Flag, 'diagnostics', _('详细诊断日志'), _('记录认证与连接状态，隐藏账号、密码和会话参数；排查问题时开启。'));
+		o.default = '0';
+		o.rmempty = false;
 
 		// Scheduled Pause: 配置服务的定时休眠
 		s = m.section(form.TypedSection, 'global', _('Scheduled Pause'), _('Pause the service during specific hours (e.g., when the school network is offline).'));
@@ -156,7 +166,7 @@ return view.extend({
 		o.datatype = 'uinteger';
 		o.placeholder = '10';
 
-		o = s.option(form.Value, 'gateway', _('Portal Gateway'), _('Portal base URL. Auto-discovered by default via HTTP redirect; this is a fallback.'));
+		o = s.option(form.Value, 'gateway', _('Portal Gateway'), _('门户地址；只接受与此地址同源的认证入口，域名或端口变化时请更新。'));
 		o.placeholder = 'http://58.53.199.144:8001';
 
 		o = s.option(form.Value, 'passType', _('Password Type'), _('1 = static password, 2 = dynamic password. Default: 1'));
@@ -169,7 +179,7 @@ return view.extend({
 				E('span', {}, _('Project hosted on ')),
 				E('a', { 'href': 'https://github.com/Chizukuo/luci-app-feiyoung', 'target': '_blank', 'style': 'color: #0069b4; text-decoration: none; font-weight: bold;' }, 'GitHub'),
 				E('span', {}, ' | '),
-				E('span', {}, 'v2.1.1')
+				E('span', {}, 'v2.2.0')
 			]);
 			nodes.appendChild(footer);
 			return nodes;
