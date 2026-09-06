@@ -23,6 +23,9 @@ paramStr=""     # 登录 token
 get_5g_radios() {
     local dev
     for dev in $(uci -q show wireless | grep "=wifi-device" | cut -d. -f2 | cut -d= -f1); do
+        # 跳过用户在无线配置中已主动禁用的射频，避免休眠结束误唤醒
+        [ "$(uci -q get wireless.$dev.disabled)" = "1" ] && continue
+
         local band=$(uci -q get wireless.$dev.band)
         local hwmode=$(uci -q get wireless.$dev.hwmode)
         local channel=$(uci -q get wireless.$dev.channel)
@@ -72,7 +75,7 @@ get_lan_interfaces() {
     local port
     if [ -d "/sys/class/net/br-lan/brif" ]; then
         for port in $(ls /sys/class/net/br-lan/brif); do
-            if ! echo "$port" | grep -q -E "wlan|ath|wl|ap"; then
+            if ! echo "$port" | grep -qi -E "wlan|ath|wl|ap|ra|rai|mesh"; then
                 echo "$port"
             fi
         done
@@ -80,7 +83,7 @@ get_lan_interfaces() {
         local ports=$(uci -q get network.lan.ports)
         [ -z "$ports" ] && ports=$(uci -q get network.lan.ifname)
         for port in $ports; do
-            if ! echo "$port" | grep -q -E "wlan|ath|wl|ap"; then
+            if ! echo "$port" | grep -qi -E "wlan|ath|wl|ap|ra|rai|mesh"; then
                 echo "$port"
             fi
         done
@@ -110,10 +113,11 @@ enable_lan_ports() {
     fi
 }
 
-# cleanup: 脚本退出时若处于休眠断网状态，恢复网络接口
+# cleanup: 脚本退出时若处于休眠断网状态，恢复网络接口并清理状态文件
 cleanup() {
     log "脚本退出，正在恢复网络接口..."
     rm -f /tmp/feiyoung_online
+    rm -f /tmp/feiyoung_status
     if [ -f /tmp/feiyoung_wan_paused ]; then
         enable_5g
         enable_lan_ports
@@ -141,13 +145,22 @@ get_base() {
     echo "$1" | sed -n 's#^\(https\?://[^/?]*\).*#\1#p'
 }
 
+# get_wan_device: 获取 WAN 实际网络设备名称（自适应 DSA 与非 DSA 如 eth0.2 / eth1 / wan）
+get_wan_device() {
+    local dev=$(ifstatus wan 2>/dev/null | sed -n 's/.*"l3_device": *"\([^"]*\)".*/\1/p' | head -1)
+    [ -z "$dev" ] && dev=$(ifstatus wan 2>/dev/null | sed -n 's/.*"device": *"\([^"]*\)".*/\1/p' | head -1)
+    [ -z "$dev" ] && dev="wan"
+    echo "$dev"
+}
+
 # ensure_default_route: 确保存在默认路由（校园网 DHCP 偶发不下发网关到内核）
 ensure_default_route() {
     [ -n "$(ip route show default 2>/dev/null)" ] && return 0
+    local dev=$(get_wan_device)
     local gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
     [ -z "$gw" ] && gw="100.64.0.1"
-    if ip route add default via "$gw" dev wan >/dev/null 2>&1; then
-        log "已补充默认路由 via $gw"
+    if ip route add default via "$gw" dev "$dev" >/dev/null 2>&1; then
+        log "已补充默认路由 via $gw dev $dev"
     fi
 }
 
@@ -159,7 +172,8 @@ check_gateway_alive() {
     local gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
     [ -z "$gw" ] && return 0
 
-    if ip neigh show dev wan 2>/dev/null | grep -E "^$gw " | grep -q -E "INCOMPLETE|FAILED"; then
+    local dev=$(get_wan_device)
+    if ip neigh show dev "$dev" 2>/dev/null | grep -E "^$gw " | grep -q -E "INCOMPLETE|FAILED"; then
         return 1
     fi
     return 0
@@ -349,7 +363,7 @@ discover_portal() {
         loc=$(printf '%s' "$headers" | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
         diag "event=portal_probe path=$(diag_url "$site") curl_rc=$curl_rc http_status=$(printf '%s' "$headers" | sed -n 's#^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*#\1#p' | head -1) location_present=$([ -n "$loc" ] && echo 1 || echo 0)"
         # 接受同源门户的网络参数或直接认证入口。
-        if [ -n "$loc" ] && echo "$loc" | grep -Eq "userip=|paramStr="; then
+        if [ -n "$loc" ] && echo "$loc" | grep -Eiq "userip=|paramStr="; then
             accept_portal_location "$loc" || continue
             return 0
         fi
@@ -368,7 +382,7 @@ discover_portal() {
         headers=$(curl -s --connect-timeout 2 --max-time 3 -A "$UA" -H "Host: $host" -D - -o /dev/null "http://${ip}/${site#*/}" 2>/dev/null); curl_rc=$?
         loc=$(printf '%s' "$headers" | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
         diag "event=portal_probe path=$(diag_url "$site") curl_rc=$curl_rc http_status=$(printf '%s' "$headers" | sed -n 's#^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*#\1#p' | head -1) location_present=$([ -n "$loc" ] && echo 1 || echo 0)"
-        if [ -n "$loc" ] && echo "$loc" | grep -Eq "userip=|paramStr="; then
+        if [ -n "$loc" ] && echo "$loc" | grep -Eiq "userip=|paramStr="; then
             accept_portal_location "$loc" || continue
             return 0
         fi
@@ -515,6 +529,7 @@ login() {
     if [ "$http_status" = 302 ] && [ "$result_url" = "$base/style/school_hbct/$client_type/logon.jsp" ]; then
         login_successes=$((login_successes + 1))
         log "登录成功"
+        last_keepalive_time=$(date +%s)
         diag "event=login_success attempts=$login_attempts successes=$login_successes"
         return 0
     elif echo "$loc" | grep -q "login_fail.jsp"; then
@@ -622,6 +637,7 @@ sync_ntp() {
 # sync_http: 通过 HTTP(S) 响应头获取 Date 字段并设置系统时间（fallback）
 sync_http() {
     local sites="http://www.baidu.com http://www.qq.com https://www.taobao.com https://www.aliyun.com"
+    local site http_header http_date formatted_date
 
     for site in $sites; do
         http_header=$(curl -sI --connect-timeout 3 "$site")
@@ -629,7 +645,7 @@ sync_http() {
 
         if [ -n "$http_date" ]; then
             # 1. 优先使用 BusyBox date -D 转换格式并设置 UTC 时间
-            local formatted_date=$(date -u -D "%a, %d %b %Y %H:%M:%S GMT" -d "$http_date" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
+            formatted_date=$(date -u -D "%a, %d %b %Y %H:%M:%S GMT" -d "$http_date" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
             if [ -n "$formatted_date" ]; then
                 date -u -s "$formatted_date" >/dev/null 2>&1 && return 0
             fi
@@ -648,9 +664,8 @@ check_pause_time() {
         return 1
     fi
 
-    local current_year=$(date +%Y)
-    # 若年份小于 2024 且未经验证，判定为 1970 等未授时状态，避免误判休眠
-    [ "$current_year" -lt 2024 ] && [ ! -f /tmp/feiyoung_time_verified ] && return 1
+    # 未完成 NTP/HTTP 授时前，系统时钟不可靠（无 RTC 硬件时易被 sysfixtime 误还原为历史时间），禁止休眠避免断网死锁
+    [ -f /tmp/feiyoung_time_verified ] || return 1
 
     current_time=$(date +%H%M)
     start_time=$(echo "$pause_start" | tr -d ':')
@@ -673,7 +688,6 @@ check_pause_time() {
 main() {
     get_config
 
-    rm -f /tmp/feiyoung_time_verified
     local portal_fail_count=0
 
     while true; do

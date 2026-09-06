@@ -110,8 +110,8 @@ return view.extend({
 		o.datatype = 'string';
 		o.password = true;
 		o.validate = function(section_id, value) {
-			if (value && value.length !== 6) {
-				return _('Password must be 6 characters long');
+			if (value && value.length < 6) {
+				return _('Password must be at least 6 characters long');
 			}
 			return true;
 		};
