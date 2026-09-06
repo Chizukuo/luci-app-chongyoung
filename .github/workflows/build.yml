@@ -11,6 +11,16 @@ on:
       - '.gitignore'
       - '.gitattributes'
       - 'index.html'
+  pull_request:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'index.html'
   release:
     types: [published]
   workflow_dispatch:
@@ -19,8 +29,19 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    name: Run Regression Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Test Suite
+        run: bash tests/run_all.sh
+
   build:
     name: Build OpenWrt Package (${{ matrix.openwrt_version }})
+    needs: test
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -70,7 +91,7 @@ jobs:
         run: |
           # 将当前源码复制到 SDK 的 package 目录下
           mkdir -p sdk/package/luci-app-feiyoung
-          rsync -av --exclude='sdk' --exclude='.git' --exclude='.github' . sdk/package/luci-app-feiyoung/
+          rsync -av --exclude='sdk' --exclude='.git' --exclude='.github' --exclude='tests' . sdk/package/luci-app-feiyoung/
 
       - name: Compile
         run: |
