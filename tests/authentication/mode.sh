@@ -1,90 +1,138 @@
 #!/usr/bin/env bash
+# tests/authentication/mode.sh
+# v2.2.0 多拨聚合 (MWAN)、MACVLAN 虚拟链路与多会话路由状态 Mock 测试
 set -euo pipefail
+
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 src="$root/root/usr/bin/feiyoung.sh"
-fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
-source <(awk '/^get_base\(\)/,/^}/' "$src")
-source <(awk '/^mode_path\(\)/,/^}/' "$src")
-source <(awk '/^portal_url\(\)/,/^}/' "$src")
-source <(awk '/^portal_entry_from_html\(\)/,/^}/' "$src")
-source <(awk '/^fetch_portal_page\(\)/,/^}/' "$src")
-# The production function names fixed cookie paths.  Rewrite only those paths
-# while loading the function so this test cannot touch a real session jar.
-test_cookie_dir="$(mktemp -d "${TMPDIR:-/tmp}/feiyoung-mode.XXXXXX")" || fail 'create cookie test directory'
-test_cookie_pc="$test_cookie_dir/feiyoung_cookie_pc"
-test_cookie_mobile="$test_cookie_dir/feiyoung_cookie_mobile"
-cleanup_cookie_test() {
-    rm -f -- "$test_cookie_pc" "$test_cookie_mobile" "$test_cookie_dir/curl-trace"
-    rmdir -- "$test_cookie_dir"
+
+test_dir="$(mktemp -d "${TMPDIR:-/tmp}/feiyoung-test-mwan.XXXXXX")"
+cleanup() {
+    rm -rf "$test_dir"
 }
-trap cleanup_cookie_test EXIT
-source <(awk '/^clear_auth_state\(\)/,/^}/' "$src" | sed \
-    -e 's|/tmp/feiyoung_cookie_pc|"$test_cookie_pc"|g' \
-    -e 's|/tmp/feiyoung_cookie_mobile|"$test_cookie_mobile"|g')
-source <(awk '/^set_client_mode\(\)/,/^}/' "$src" | sed \
-    -e 's|/tmp/feiyoung_cookie_pc|"$test_cookie_pc"|g' \
-    -e 's|/tmp/feiyoung_cookie_mobile|"$test_cookie_mobile"|g')
-source <(awk '/^keepalive\(\)/,/^}/' "$src")
-diag() { :; }
-diagnostics=0; last_client_type=pc; PC_UA='PC-UA'; MOBILE_UA='MOBILE-UA'
-COOKIE_JAR="$test_cookie_pc"
-CURL_OPTS='-s'; FETCH_FIXTURE=ok
-curl_trace="$test_cookie_dir/curl-trace"
-curl() {
-    local headers='' body='' out_h='' out_b='' arg url=''
-    while [ "$#" -gt 0 ]; do
-        arg="$1"; shift
-        case "$arg" in
-            -D) out_h="$1"; shift ;;
-            -o) out_b="$1"; shift ;;
-            -w) shift ;;
-            http://*|https://*) url="$arg" ;;
-        esac
-    done
-    case "$FETCH_FIXTURE" in
-        cross) headers='HTTP/1.1 302 Found\r\nLocation: http://evil.test/style/school_hbct/pc/index.jsp\r\n\r\n'; body='' ;;
-        412) headers='HTTP/1.1 412 Precondition Failed\r\n\r\n'; body='' ;;
-        empty) headers='HTTP/1.1 200 OK\r\n\r\n'; body='' ;;
-        fail) return 7 ;;
-        500) headers='HTTP/1.1 500 Server Error\r\n\r\n'; body='error' ;;
-        *) headers='HTTP/1.1 200 OK\r\n\r\n'; body='paramStr=SAFE%2BVALUE' ;;
+trap cleanup EXIT
+
+assertions=0
+fail() {
+    printf 'FAIL: %s\n' "$1" >&2
+    if [ -f "${trace_file:-}" ]; then
+        printf '%s\n' '--- TRACE ---' >&2
+        cat "$trace_file" >&2
+    fi
+    exit 1
+}
+
+assert_eq() {
+    local expected="$1" actual="$2" label="$3"
+    if [ "$actual" != "$expected" ]; then
+        fail "$label (expected='$expected' actual='$actual')"
+    fi
+    assertions=$((assertions + 1))
+}
+
+assert_true() {
+    local label="$1"
+    shift
+    if ! "$@"; then
+        fail "$label"
+    fi
+    assertions=$((assertions + 1))
+}
+
+# 1. 提取被测生产函数
+source <(sed -n '/^generate_mac() {/,/^}/p' "$src")
+source <(sed -n '/^setup_dhcp_script() {/,/^}/p' "$src")
+source <(sed -n '/^get_lan_device() {/,/^}/p' "$src")
+source <(awk '/^apply_mwan_routing\(\) \{/{flag=1} /^# update_overall_status/{flag=0} flag' "$src")
+source <(sed -n '/^teardown_mwan_routing() {/,/^}/p' "$src")
+source <(sed -n '/^update_overall_status() {/,/^}/p' "$src")
+source <(sed -n '/^mask_user() {/,/^}/p' "$src")
+
+# 2. MAC 地址派生算法测试 (确保前缀 02 且根据会话序号不冲突)
+mac1=$(generate_mac "02:11:22:33:44:00" 1)
+mac2=$(generate_mac "02:11:22:33:44:00" 2)
+assert_eq "02:11:22:33:44:12" "$mac1" "session 1 derived MAC format"
+assert_eq "02:11:22:33:44:23" "$mac2" "session 2 derived MAC format"
+[ "$mac1" != "$mac2" ] || fail "MACs must be distinct"
+assertions=$((assertions + 1))
+
+# 3. 虚拟网卡专享轻量 DHCP 处理脚本生成测试
+setup_dhcp_script
+assert_true "DHCP handler exists" test -x /tmp/feiyoung_dhcp.sh
+assert_true "DHCP handler contains table isolation" grep -q "table_id=\$((100 + vidx))" /tmp/feiyoung_dhcp.sh
+assert_true "DHCP handler contains oif policy rule" grep -q "oif \"\$interface\" lookup \"\$table_id\"" /tmp/feiyoung_dhcp.sh
+rm -f /tmp/feiyoung_dhcp.sh
+
+# 4. 多拨聚合路由生成与 nftables 规则测试
+log() { :; }
+load_balancing="1"
+LAST_MWAN_STATE=""
+trace_file="$test_dir/mwan.trace"
+
+get_wan_device() { echo "wan"; }
+get_lan_device() { echo "br-lan"; }
+get_dev_gw() { echo "100.64.0.1"; }
+get_dev_ip() { echo "100.64.1.$1"; }
+
+ip() {
+    printf 'ip %s\n' "$*" >> "$trace_file"
+}
+
+nft() {
+    if [ "$1" = "-f" ] && [ "$2" = "-" ]; then
+        cat >> "$trace_file"
+    else
+        printf 'nft %s\n' "$*" >> "$trace_file"
+    fi
+}
+
+: > "$trace_file"
+# 4.1 在线数 < 2 时不触发聚合
+apply_mwan_routing 1 "wan"
+assert_eq "" "$(<"$trace_file")" "single wan does not trigger mwan"
+
+# 4.2 在线数 = 2 时动态下发黏性聚合与策略路由
+: > "$trace_file"
+apply_mwan_routing 2 "wan vwan1"
+assert_true "mwan creates priority 1010 for wan" grep -q "ip rule add priority 1010 fwmark 0x10 lookup main" "$trace_file"
+assert_true "mwan creates priority 1012 for vwan1" grep -q "ip rule add priority 1012 fwmark 0x20 lookup 101" "$trace_file"
+assert_true "mwan creates priority 1030 for wan source ip" grep -q "ip rule add priority 1030 from 100.64.1.wan lookup 100" "$trace_file"
+assert_true "mwan creates priority 1032 for vwan1 source ip" grep -q "ip rule add priority 1032 from 100.64.1.vwan1 lookup 101" "$trace_file"
+assert_true "mwan generates sticky nft table" grep -q "table inet feiyoung_mwan" "$trace_file"
+assert_true "mwan contains numgen mod 2 map" grep -q "ct mark set numgen inc mod 2 map { 0 : 0x10, 1 : 0x20 }" "$trace_file"
+assert_true "mwan sets mss 1400" grep -q "tcp option maxseg size set 1400" "$trace_file"
+
+# 4.3 聚合规则平滑卸载
+: > "$trace_file"
+teardown_mwan_routing
+assert_true "teardown removes feiyoung_mwan table" grep -q "nft delete table inet feiyoung_mwan" "$trace_file"
+assert_true "teardown flushes route cache" grep -q "ip route flush cache" "$trace_file"
+
+# 5. 多会话状态文件汇总格式测试 (update_overall_status)
+NUM_ACCTS=2
+ACCT_1_USER="18900001111"
+ACCT_1_TYPE="pc"
+ACCT_1_DEV="wan"
+ACCT_1_STATUS="在线"
+
+ACCT_2_USER="18900001111"
+ACCT_2_TYPE="mobile"
+ACCT_2_DEV="vwan1"
+ACCT_2_STATUS="在线"
+
+get_dev_ip() {
+    case "$1" in
+        wan) echo "100.64.42.36" ;;
+        vwan1) echo "100.64.84.223" ;;
     esac
-    if [ -n "$curl_trace" ]; then printf '%s' "$out_b" > "$curl_trace"; fi
-    if [ -n "$out_h" ]; then printf '%b' "$headers" > "$out_h"; fi
-    if [ -n "$out_b" ]; then printf '%s' "$body" > "$out_b"; fi
-    case "$FETCH_FIXTURE" in cross) printf '302';; 412) printf '412';; 500) printf '500';; *) printf '200';; esac
 }
-gateway='http://portal.test:8001'; PORTAL_URL="$gateway/root"
-client_type=mobile
-got=$(mode_path 'http://portal.test:8001/style/school_hbct/pc/index.jsp?paramStr=A%2BB+%2F&path=/pc/keep')
-[ "$got" = 'http://portal.test:8001/style/school_hbct/mobile/index.jsp?paramStr=A%2BB+%2F&path=/pc/keep' ] || fail 'mobile path/query preservation'
-[ "$(mode_path 'http://portal.test:8001/style/school_hbct/pc/index.jsp?paramStr=A%2BB+%2F')" = 'http://portal.test:8001/style/school_hbct/mobile/index.jsp?paramStr=A%2BB+%2F' ] || fail 'direct pc entry mode switch'
-[ "$(mode_path 'http://portal.test:8001/other?next=/style/school_hbct/pc/index.jsp')" = 'http://portal.test:8001/other?next=/style/school_hbct/pc/index.jsp' ] || fail 'query template must not be rewritten'
-html='<frameset><frame name="mainFrame" src="/style/school_hbct/pc/index.jsp?paramStr=A%2BB+%2F"></frameset>'
-[ "$(portal_entry_from_html "$html")" = 'http://portal.test:8001/style/school_hbct/mobile/index.jsp?paramStr=A%2BB+%2F' ] || fail 'same origin frame extraction'
-bad='<frame name="mainFrame" src="http://evil.test/style/school_hbct/pc/index.jsp?paramStr=SECRET">'
-if portal_entry_from_html "$bad"; then fail 'cross origin frame accepted'; fi
-if portal_entry_from_html '<frame name="mainFrame" src="https://portal.test:8443/style/school_hbct/pc/index.jsp?paramStr=X">'; then fail 'cross origin port accepted'; fi
-client_type=pc
-[ "$(mode_path 'http://portal.test:8001/style/school_hbct/mobile/index.jsp?x=/mobile/')" = 'http://portal.test:8001/style/school_hbct/pc/index.jsp?x=/mobile/' ] || fail 'pc path/query preservation'
-[ "$(mode_path 'http://portal.test:8001/style/school_hbct/mobile/index.jsp?paramStr=A%2BB+%2F')" = 'http://portal.test:8001/style/school_hbct/pc/index.jsp?paramStr=A%2BB+%2F' ] || fail 'direct mobile entry mode switch'
-if portal_url 'http://evil.test/style/school_hbct/pc/index.jsp' "$gateway/" >/dev/null; then fail 'cross-origin Location accepted'; fi
-FETCH_FIXTURE=412; if fetch_portal_page "$gateway/" test; then fail '412 accepted'; fi
-FETCH_FIXTURE=empty; if fetch_portal_page "$gateway/" test; then fail 'empty 200 accepted'; fi
-FETCH_FIXTURE=fail; if fetch_portal_page "$gateway/" test; then fail 'curl failure accepted'; fi
-touch "$test_cookie_pc" "$test_cookie_mobile"
-paramStr=OLD; PORTAL_URL=OLD; fyhtml=OLD; auth_ready=1; auth_client_type=pc
-set_client_mode mobile
-[ "$client_type" = mobile ] || fail 'mobile mode selection'
-[ "$UA" = MOBILE-UA ] || fail 'mobile UA selection'
-[ "$COOKIE_JAR" = "$test_cookie_mobile" ] || fail 'mobile cookie selection'
-[ ! -e "$test_cookie_pc" ] && [ ! -e "$test_cookie_mobile" ] || fail 'mode switch did not clear cookies'
-[ -z "$paramStr" ] && [ -z "$PORTAL_URL" ] && [ -z "$fyhtml" ] || fail 'mode switch did not clear portal state'
-[ "$auth_ready" = 0 ] && [ -z "$auth_client_type" ] || fail 'mode switch did not clear auth state'
-touch "$COOKIE_JAR"; PORTAL_URL="$gateway/style/school_hbct/mobile/index.jsp?paramStr=X"; FETCH_FIXTURE=ok
-: > "$curl_trace"
-if ! keepalive; then fail '200 keepalive failed'; fi
-[ "$(<"$curl_trace")" = /dev/null ] || fail 'keepalive must discard response body'
-FETCH_FIXTURE=500
-if keepalive; then fail '500 keepalive accepted'; fi
-printf 'PASS: authentication mode path, query bytes, and same-origin frame checks\n'
+
+update_overall_status "运行中 - 网络正常 (2/2 在线，多拨聚合已生效)"
+status_content=$(cat /tmp/feiyoung_status)
+rm -f /tmp/feiyoung_status
+
+assert_true "summary header present" echo "$status_content" | grep -q "2/2 在线，多拨聚合已生效"
+assert_true "pc masked line present" echo "$status_content" | grep -q "• \[PC\] 189\*\*\*\*1111 (wan): 在线 \[100.64.42.36\]"
+assert_true "mobile masked line present" echo "$status_content" | grep -q "• \[Mobile\] 189\*\*\*\*1111 (vwan1): 在线 \[100.64.84.223\]"
+
+printf 'PASS: MWAN policy routing, MAC derivation, DHCP template, and status assertions=%d\n' "$assertions"

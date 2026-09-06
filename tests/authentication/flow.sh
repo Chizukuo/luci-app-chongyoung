@@ -1,53 +1,23 @@
 #!/usr/bin/env bash
+# tests/authentication/flow.sh
+# v2.2.0 多会话并发认证与移动端 WAF 绕过 Mock 自动化测试套件
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 src="$root/root/usr/bin/feiyoung.sh"
 
-# Extract only the production functions under test.  The daemon entry point is
-# deliberately never sourced: this test must not touch router services.
-source <(awk '/^get_base\(\)/,/^}/' "$src")
-source <(awk '/^clear_auth_state\(\)/,/^}/' "$src")
-source <(awk '/^mode_path\(\)/,/^}/' "$src")
-source <(awk '/^portal_url\(\)/,/^}/' "$src")
-source <(awk '/^portal_entry_from_html\(\)/,/^}/' "$src")
-source <(awk '/^fetch_portal_page\(\)/,/^}/' "$src")
-source <(awk '/^init_network\(\)/,/^}/' "$src")
-source <(awk '/^login\(\)/,/^}/' "$src")
-source <(awk '/^set_client_mode\(\)/,/^}/' "$src")
-source <(awk '/^keepalive\(\)/,/^}/' "$src")
-source <(awk '/^diag\(\)/,/^}/' "$src")
-
-gateway='http://portal.test:8001'
-PC_UA='PC-UA'
-MOBILE_UA='MOBILE-UA'
-CURL_OPTS='-s --connect-timeout 5 --max-time 10'
-diagnostics=1
-diag_seq=0
-pass_fixtures=0
-total_assertions=0
-fixture_assertions=0
-fixture_name=''
-
-test_root="$(mktemp -d)"
+test_dir="$(mktemp -d "${TMPDIR:-/tmp}/feiyoung-test-flow.XXXXXX")"
 cleanup() {
-    rm -rf "$test_root"
+    rm -rf "$test_dir"
 }
 trap cleanup EXIT
 
-log() {
-    printf '%s\n' "$*" >> "$RUN_DIR/log"
-}
-
-logger() {
-    printf '%s\n' "$*" >> "$RUN_DIR/diag"
-}
-
+assertions=0
 fail() {
-    printf 'FAIL fixture=%s assertion=%s\n' "${fixture_name:-none}" "$1" >&2
-    if [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/failure" ] && [ -s "$RUN_DIR/failure" ]; then
-        printf '%s\n' 'stub failures:' >&2
-        cat "$RUN_DIR/failure" >&2
+    printf 'FAIL: %s\n' "$1" >&2
+    if [ -f "$trace_file" ]; then
+        printf '%s\n' '--- TRACE ---' >&2
+        cat "$trace_file" >&2
     fi
     exit 1
 }
@@ -55,10 +25,9 @@ fail() {
 assert_eq() {
     local expected="$1" actual="$2" label="$3"
     if [ "$actual" != "$expected" ]; then
-        fail "$label (expected=$expected actual=$actual)"
+        fail "$label (expected='$expected' actual='$actual')"
     fi
-    fixture_assertions=$((fixture_assertions + 1))
-    total_assertions=$((total_assertions + 1))
+    assertions=$((assertions + 1))
 }
 
 assert_true() {
@@ -67,386 +36,187 @@ assert_true() {
     if ! "$@"; then
         fail "$label"
     fi
-    fixture_assertions=$((fixture_assertions + 1))
-    total_assertions=$((total_assertions + 1))
+    assertions=$((assertions + 1))
 }
 
-assert_file_contains() {
-    local file="$1" needle="$2" label="$3"
-    if ! grep -Fq -- "$needle" "$file"; then
-        fail "$label (missing=$needle file=$file)"
+assert_false() {
+    local label="$1"
+    shift
+    if "$@"; then
+        fail "$label"
     fi
-    fixture_assertions=$((fixture_assertions + 1))
-    total_assertions=$((total_assertions + 1))
+    assertions=$((assertions + 1))
 }
 
-assert_file_not_contains() {
-    local file="$1" needle="$2" label="$3"
-    if grep -Fq -- "$needle" "$file"; then
-        fail "$label (unexpected=$needle file=$file)"
-    fi
-    fixture_assertions=$((fixture_assertions + 1))
-    total_assertions=$((total_assertions + 1))
-}
+# 1. 提取被测生产函数 (直接从 root/usr/bin/feiyoung.sh 提取)
+source <(sed -n '/^mask_user() {/,/^}/p' "$src")
+source <(sed -n '/^get_base() {/,/^}/p' "$src")
+source <(sed -n '/^check_account_online() {/,/^}/p' "$src")
+source <(sed -n '/^login_account() {/,/^}/p' "$src")
+source <(sed -n '/^keepalive_account() {/,/^}/p' "$src")
 
-assert_requests_not_contains() {
-    local needle="$1" label="$2"
-    if grep -RFq -- "$needle" "$RUN_DIR/requests"; then
-        fail "$label (unexpected=$needle request logs=$RUN_DIR/requests)"
-    fi
-    fixture_assertions=$((fixture_assertions + 1))
-    total_assertions=$((total_assertions + 1))
-}
+# 2. Mock 基础环境与配置变量
+UA_PC="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0.0.0 Safari/537.36"
+UA_MOBILE="Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36"
+gateway="http://58.53.199.144:8001"
+passType="1"
+connect_timeout=2
+total_timeout=3
 
-assert_ua_sequence() {
-    local expected="$1" label="$2" actual
-    actual=$(for request in "$RUN_DIR"/requests/*.log; do sed -n 's/^ua=//p' "$request"; done | paste -sd/ -)
-    assert_eq "$expected" "$actual" "$label"
-}
+trace_file="$test_dir/curl.trace"
+mock_stage=""
 
-start_fixture() {
-    fixture_name="$1"
-    FIXTURE="$1"
-    RUN_DIR="$test_root/$FIXTURE"
-    mkdir -p "$RUN_DIR/requests"
-    : > "$RUN_DIR/sequence"
-    : > "$RUN_DIR/failure"
-    : > "$RUN_DIR/log"
-    : > "$RUN_DIR/diag"
-    fixture_assertions=0
+log() { :; }
 
-    # Set the mode through the production function, then redirect only the
-    # test's cookie I/O to the fixture directory.  Keeping last_client_type
-    # equal avoids the function's real-router cleanup paths.
-    client_type="$2"
-    last_client_type="$client_type"
-    set_client_mode "$client_type"
-    if [ "$client_type" = mobile ]; then
-        assert_eq '/tmp/feiyoung_cookie_mobile' "$COOKIE_JAR" 'set_client_mode mobile cookie contract'
-    else
-        assert_eq '/tmp/feiyoung_cookie_pc' "$COOKIE_JAR" 'set_client_mode pc cookie contract'
-    fi
-    COOKIE_JAR="$RUN_DIR/cookie"
+# 3. 手机号隐私掩码单元测试
+assert_eq "189****1111" "$(mask_user "18900001111")" "11-digit phone masking"
+assert_eq "138****1234" "$(mask_user "13800131234")" "standard phone masking"
+assert_eq "admin" "$(mask_user "admin")" "short username untouched"
+assert_eq "http://58.53.199.144:8001" "$(get_base "http://58.53.199.144:8001/style/school_hbct/pc/index.jsp?userip=1.1.1.1")" "get_base extraction"
 
-    gateway='http://portal.test:8001'
-    PORTAL_URL=''
-    paramStr=''
-    fyhtml=''
-    auth_ready=0
-    auth_client_type=''
-    PAGE_HTTP=000
-    PAGE_BODY=''
-    PAGE_URL=''
-    user='demo-user'
-    password='demo-pass'
-    passType=1
-    login_attempts=0
-    login_successes=0
-}
-
-pass_fixture() {
-    local requests
-    requests=$(find "$RUN_DIR/requests" -type f -name '*.log' | wc -l | tr -d ' ')
-    if [ -s "$RUN_DIR/failure" ]; then
-        fail 'stub failure file is not empty'
-    fi
-    printf 'PASS fixture=%s assertions=%d requests=%s\n' "$fixture_name" "$fixture_assertions" "$requests"
-    pass_fixtures=$((pass_fixtures + 1))
-}
-
-stub_failure() {
-    printf '%s\n' "$*" >> "$RUN_DIR/failure"
-}
-
-# The curl function is intentionally a shell stub.  Each invocation persists
-# its sequence number and request fields in the mktemp directory because curl
-# is called through command substitution inside the production functions.
+# 4. 在线状态探测单元测试 (check_account_online)
+curl_http_code=200
 curl() {
-    local out_h='' out_b='' writeout='' ua='' cookie_in='' cookie_out='' referer=''
-    local include=0 method=GET data='' url='' arg header_line='' data_urlencoded=''
-    local index headers='' body='' status='' rc=0
-    local sequence
+    printf '%s\n' "$*" >> "$trace_file"
+    for arg in "$@"; do
+        if [ "$arg" = '%{http_code}' ]; then
+            printf '%s' "$curl_http_code"
+            return 0
+        fi
+    done
+}
 
+assert_true "online check when HTTP 200" check_account_online "wan" "pc"
+curl_http_code=204
+assert_true "online check when HTTP 204" check_account_online "wan" "pc"
+curl_http_code=404
+assert_true "online check when HTTP 404" check_account_online "wan" "pc"
+curl_http_code=302
+assert_false "offline check when intercepted with HTTP 302" check_account_online "wan" "pc"
+curl_http_code=000
+assert_false "offline check when connection failed" check_account_online "wan" "pc"
+
+# 5. Mock 模拟完整 PC 认证流 (HTML 页面提取 paramStr)
+ACCT_1_USER="18900001111"
+ACCT_1_PASS="654321"
+ACCT_1_TYPE="pc"
+ACCT_1_DEV="wan"
+
+mock_stage="pc_success"
+curl() {
+    local dump_hdr="" out_file="" ua="" data="" url="" interface=""
     while [ "$#" -gt 0 ]; do
-        arg="$1"
-        shift
-        case "$arg" in
-            -D|--dump-header) [ "$#" -gt 0 ] || { stub_failure "missing -D value"; return 97; }; out_h="$1"; shift ;;
-            -o|--output) [ "$#" -gt 0 ] || { stub_failure "missing -o value"; return 97; }; out_b="$1"; shift ;;
-            -A|--user-agent) [ "$#" -gt 0 ] || { stub_failure "missing -A value"; return 97; }; ua="$1"; shift ;;
-            -b|--cookie) [ "$#" -gt 0 ] || { stub_failure "missing -b value"; return 97; }; cookie_in="$1"; shift ;;
-            -c|--cookie-jar) [ "$#" -gt 0 ] || { stub_failure "missing -c value"; return 97; }; cookie_out="$1"; shift ;;
-            -e|--referer) [ "$#" -gt 0 ] || { stub_failure "missing -e value"; return 97; }; referer="$1"; shift ;;
-            -w|--write-out) [ "$#" -gt 0 ] || { stub_failure "missing -w value"; return 97; }; writeout="$1"; shift ;;
-            --data|--data-raw|--data-binary|-d) [ "$#" -gt 0 ] || { stub_failure "missing --data value"; return 97; }; method=POST; data="$1"; shift ;;
-            --data-urlencode) [ "$#" -gt 0 ] || { stub_failure "missing --data-urlencode value"; return 97; }; method=POST; data_urlencoded="${data_urlencoded}${data_urlencoded:+$'\n'}$1"; shift ;;
-            -H|--header) [ "$#" -gt 0 ] || { stub_failure "missing -H value"; return 97; }; header_line="$1"; shift ;;
-            -i|--include) include=1 ;;
-            --proto|--connect-timeout|--max-time) [ "$#" -gt 0 ] || { stub_failure "missing $arg value"; return 97; }; shift ;;
-            -s|-q|--silent|--compressed) : ;;
-            --) [ "$#" -gt 0 ] || { stub_failure 'missing URL after --'; return 97; }; url="$1"; shift ;;
-            http://*|https://*) url="$arg" ;;
-            *) stub_failure "unparsed curl argument: $arg"; return 97 ;;
+        case "$1" in
+            -D) dump_hdr="$2"; shift 2 ;;
+            -o) out_file="$2"; shift 2 ;;
+            -A) ua="$2"; shift 2 ;;
+            --interface) interface="$2"; shift 2 ;;
+            --data) data="$2"; shift 2 ;;
+            http://*|https://*) url="$1"; shift ;;
+            *) shift ;;
         esac
     done
 
-    sequence=$(cat "$RUN_DIR/sequence")
-    index=$((sequence + 1))
-    printf '%s\n' "$index" > "$RUN_DIR/sequence"
-    {
-        printf 'index=%s\n' "$index"
-        printf 'fixture=%s\n' "$FIXTURE"
-        printf 'method=%s\n' "$method"
-        printf 'url=%s\n' "$url"
-        printf 'ua=%s\n' "$ua"
-        printf 'cookie_in=%s\n' "$cookie_in"
-        printf 'cookie_out=%s\n' "$cookie_out"
-        printf 'cookie_before=%s\n' "$([ -n "$cookie_in" ] && [ -f "$cookie_in" ] && printf 1 || printf 0)"
-        printf 'output=%s\n' "$out_b"
-        printf 'referer=%s\n' "$referer"
-        printf 'data=%s\n' "$data"
-        printf 'data_urlencoded=%s\n' "$data_urlencoded"
-        printf 'fixed_fields=%s\n' "$([ -n "$data" ] && printf '%s' "$data" | awk -F'&' '{print NF}' || printf 0)"
-        printf 'encoded_fields=%s\n' "$([ -n "$data_urlencoded" ] && printf '%s' "$data_urlencoded" | awk 'NF {n++} END {print n+0}' || printf 0)"
-        if [ "$method" = POST ]; then
-            printf 'total_fields=%s\n' "$(( $( [ -n "$data" ] && printf '%s' "$data" | awk -F'&' '{print NF}' || printf 0) + $( [ -n "$data_urlencoded" ] && printf '%s' "$data_urlencoded" | awk 'NF {n++} END {print n+0}' || printf 0) ))"
+    printf 'stage=%s method=%s url=%s dev=%s dump_hdr=%s data=%s\n' \
+        "$mock_stage" "$([ -n "$data" ] && echo POST || echo GET)" "$url" "$interface" "$dump_hdr" "$data" >> "$trace_file"
+
+    # Stage: 门户探测重定向
+    if [[ "$url" =~ (223.5.5.5|119.29.29.29|114.114.114.114) ]]; then
+        if [ "$dump_hdr" = "-" ] || [ -z "$dump_hdr" ]; then
+            printf 'HTTP/1.1 302 Found\r\nLocation: http://58.53.199.144:8001/style/school_hbct/pc/index.jsp?userip=100.64.42.36\r\n\r\n'
+        else
+            printf 'HTTP/1.1 302 Found\r\nLocation: http://58.53.199.144:8001/style/school_hbct/pc/index.jsp?userip=100.64.42.36\r\n\r\n' > "$dump_hdr"
         fi
-        printf 'header=%s\n' "$header_line"
-        printf 'writeout=%s\n' "$writeout"
-    } > "$RUN_DIR/requests/$(printf '%03d' "$index").log"
+        return 0
+    fi
 
-    case "$url" in
-        *evil.test*)
-            stub_failure "forbidden evil request index=$index url=$url"
-            return 98
-            ;;
-    esac
+    # Stage: PC 页面抓取 (HTML 内嵌 paramStr)
+    if [[ "$url" =~ /style/school_hbct/pc/index.jsp ]]; then
+        printf '<html><frame src="/style/school_hbct/pc/index.jsp?paramStr=PC_MOCK_TOKEN_12345"/></html>'
+        return 0
+    fi
 
-    case "$FIXTURE:$index" in
-        pc_direct:1)
-            status=200; body='direct-pc'
-            ;;
-        mobile_direct:1)
-            status=200; body='direct-mobile'
-            ;;
-        mobile_root_frame:1)
-            status=412; body=''
-            ;;
-        mobile_root_frame:2)
-            status=200; body='<frameset><frame name="mainFrame" src="/style/school_hbct/pc/index.jsp?paramStr=FRAME_TOKEN"></frameset>'
-            ;;
-        mobile_root_frame:3)
-            status=200; body='selected-mobile'
-            ;;
-        mobile_bootstrap_redirect:1)
-            status=412; body=''
-            ;;
-        mobile_bootstrap_redirect:2)
-            status=302; body=''; headers=$'HTTP/1.1 302 Found\r\nLocation: /style/school_hbct/mobile/index.jsp?paramStr=BOOT_TOKEN\r\n\r\n'
-            ;;
-        mobile_bootstrap_redirect:3)
-            status=200; body='mobile-terminal-desktop-ua'
-            ;;
-        mobile_bootstrap_redirect:4)
-            status=200; body='mobile-terminal-mobile-ua'
-            ;;
-        final_412:1|final_empty:1|final_curl:1)
-            status=412; body=''
-            ;;
-        final_412:2|final_empty:2|final_curl:2)
-            status=200; body='<frameset><frame name="mainFrame" src="/style/school_hbct/pc/index.jsp?paramStr=FAIL_TOKEN"></frameset>'
-            ;;
-        final_412:3)
-            status=412; body=''
-            ;;
-        final_empty:3)
-            status=200; body=''
-            ;;
-        final_curl:3)
-            return 7
-            ;;
-        frame_external:1)
-            status=412; body=''
-            ;;
-        frame_external:2)
-            status=200; body='<frameset><frame name="mainFrame" src="http://evil.test/style/school_hbct/pc/index.jsp?paramStr=EVIL_FRAME"></frameset>'
-            ;;
-        redirect_external:1)
-            status=302; body=''; headers=$'HTTP/1.1 302 Found\r\nLocation: http://evil.test/style/school_hbct/pc/index.jsp?paramStr=EVIL_REDIRECT\r\n\r\n'
-            ;;
-        login_success:1)
-            status=200; body='login-init'
-            ;;
-        login_success:2)
-            status=302; body=''; headers=$'HTTP/1.1 302 Found\r\nLocation: /style/school_hbct/pc/logon.jsp\r\n\r\n'
-            ;;
-        keepalive_200:1)
-            status=200; body=''
-            ;;
-        keepalive_500:1)
-            status=500; body=''
-            ;;
-        *)
-            stub_failure "unexpected fixture request index=$index url=$url"
-            return 99
-            ;;
-    esac
-
-    if [ -z "$headers" ]; then
-        headers="HTTP/1.1 $status Status\r\n\r\n"
+    # Stage: POST 登录提交
+    if [[ "$url" =~ /page_auth.jsp ]]; then
+        if [[ "$mock_stage" == "pc_success" || "$mock_stage" == "mobile_success" ]]; then
+            printf 'HTTP/1.1 302 Found\r\nLocation: http://58.53.199.144:8001/style/school_hbct/pc/logon.jsp\r\n\r\n'
+        elif [[ "$mock_stage" == "fail_password" ]]; then
+            printf 'HTTP/1.1 302 Found\r\nLocation: http://58.53.199.144:8001/login_fail.jsp?reason=auth_error\r\n\r\n'
+        fi
+        return 0
     fi
-    [ -z "$out_h" ] || printf '%b' "$headers" > "$out_h"
-    [ -z "$out_b" ] || printf '%s' "$body" > "$out_b"
-    if [ "$rc" -eq 0 ] && [ -n "$cookie_out" ] && [[ "$status" = 2* || "$status" = 3* ]]; then
-        printf '# Netscape HTTP Cookie File\nportal.test\tFALSE\t/\tFALSE\t0\tSESSION\tfixture-%s\n' "$index" > "$cookie_out"
-    fi
-    if [ "$include" -eq 1 ]; then
-        printf '%b' "$headers"
-    fi
-    if [ "$writeout" = '%{http_code}' ]; then
-        printf '%s' "$status"
-    fi
-    return "$rc"
 }
 
-init_common() {
-    PORTAL_URL="$1"
-    if ! init_network; then
-        return 1
+: > "$trace_file"
+assert_true "PC login flow succeeds" login_account 1
+assert_true "trace recorded PC portal and POST" grep -q "paramStr=PC_MOCK_TOKEN_12345" "$trace_file"
+
+# 6. Mock 模拟移动端 (Mobile) 认证流 (302 Location 提取 paramStr 绕过 WAF 412)
+ACCT_2_USER="18900001111"
+ACCT_2_PASS="654321"
+ACCT_2_TYPE="mobile"
+ACCT_2_DEV="vwan1"
+
+mock_stage="mobile_success"
+curl() {
+    local dump_hdr="" out_file="" ua="" data="" url="" interface=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -D) dump_hdr="$2"; shift 2 ;;
+            -o) out_file="$2"; shift 2 ;;
+            -A) ua="$2"; shift 2 ;;
+            --interface) interface="$2"; shift 2 ;;
+            --data) data="$2"; shift 2 ;;
+            http://*|https://*) url="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    printf 'stage=%s method=%s url=%s dev=%s data=%s\n' \
+        "$mock_stage" "$([ -n "$data" ] && echo POST || echo GET)" "$url" "$interface" "$data" >> "$trace_file"
+
+    # Stage: 移动端门户探测
+    if [[ "$url" =~ (223.5.5.5|119.29.29.29|114.114.114.114) ]]; then
+        printf 'HTTP/1.1 302 Found\r\nLocation: http://58.53.199.144:8001/style/school_hbct/pc/index.jsp?userip=100.64.84.223\r\n\r\n'
+        return 0
     fi
-    assert_eq 1 "$auth_ready" 'init auth_ready'
-    assert_eq "$client_type" "$auth_client_type" 'init auth client type'
-    assert_true 'init paramStr is nonempty' test -n "$paramStr"
+
+    # Stage: 移动端请求门户被 302 拦截到 mobile/index.jsp?paramStr=... (绕过 412)
+    if [[ "$url" =~ /style/school_hbct/pc/index.jsp ]]; then
+        if [ -n "$dump_hdr" ]; then
+            printf 'HTTP/1.1 302 Found\r\nLocation: http://58.53.199.144:8001/style/school_hbct/mobile/index.jsp?paramStr=MOB_MOCK_TOKEN_67890\r\n\r\n' > "$dump_hdr"
+        fi
+        return 0
+    fi
+
+    # Stage: 提交认证
+    if [[ "$url" =~ /page_auth.jsp ]]; then
+        printf 'HTTP/1.1 302 Found\r\nLocation: http://58.53.199.144:8001/style/school_hbct/mobile/logon.jsp\r\n\r\n'
+        return 0
+    fi
 }
 
-start_fixture pc_direct pc
-init_common "$gateway/style/school_hbct/pc/index.jsp?paramStr=PC_TOKEN"
-assert_eq 1 "$(cat "$RUN_DIR/sequence")" 'pc direct request count'
-assert_file_contains "$RUN_DIR/requests/001.log" 'method=GET' 'pc direct method'
-assert_file_contains "$RUN_DIR/requests/001.log" 'ua=PC-UA' 'pc direct UA'
-assert_file_contains "$RUN_DIR/requests/001.log" 'url=http://portal.test:8001/style/school_hbct/pc/index.jsp?paramStr=PC_TOKEN' 'pc direct URL'
-pass_fixture
+: > "$trace_file"
+assert_true "Mobile login flow succeeds via 302 token extraction" login_account 2
+assert_true "trace recorded Mobile paramStr extraction" grep -q "paramStr=MOB_MOCK_TOKEN_67890" "$trace_file"
 
-start_fixture mobile_direct mobile
-init_common "$gateway/style/school_hbct/pc/index.jsp?paramStr=MOBILE_TOKEN"
-assert_eq 1 "$(cat "$RUN_DIR/sequence")" 'mobile direct request count'
-assert_file_contains "$RUN_DIR/requests/001.log" 'method=GET' 'mobile direct method'
-assert_file_contains "$RUN_DIR/requests/001.log" 'ua=MOBILE-UA' 'mobile direct UA'
-assert_file_contains "$RUN_DIR/requests/001.log" 'url=http://portal.test:8001/style/school_hbct/mobile/index.jsp?paramStr=MOBILE_TOKEN' 'mobile path replacement'
-pass_fixture
+# 7. Mock 登录失败场景 (密码错误)
+mock_stage="fail_password"
+assert_false "login fails on incorrect credentials" login_account 1
 
-start_fixture mobile_root_frame mobile
-init_common "$gateway/"
-assert_eq 3 "$(cat "$RUN_DIR/sequence")" 'mobile root frame request count'
-assert_file_contains "$RUN_DIR/requests/001.log" 'ua=MOBILE-UA' 'mobile root first UA'
-assert_file_contains "$RUN_DIR/requests/002.log" 'ua=PC-UA' 'mobile root desktop bootstrap UA'
-assert_file_contains "$RUN_DIR/requests/003.log" 'ua=MOBILE-UA' 'mobile root selected UA'
-assert_file_contains "$RUN_DIR/requests/001.log" 'url=http://portal.test:8001/' 'mobile root first URL'
-assert_file_contains "$RUN_DIR/requests/002.log" 'url=http://portal.test:8001/' 'mobile root bootstrap URL'
-assert_file_contains "$RUN_DIR/requests/003.log" 'url=http://portal.test:8001/style/school_hbct/mobile/index.jsp?paramStr=FRAME_TOKEN' 'mobile root selected URL'
-assert_file_contains "$RUN_DIR/requests/002.log" 'cookie_before=0' 'mobile root starts bootstrap without cookie'
-assert_file_contains "$RUN_DIR/requests/003.log" 'cookie_before=0' 'desktop bootstrap cookie cleared before selected request'
-assert_ua_sequence 'MOBILE-UA/PC-UA/MOBILE-UA' 'mobile root exact UA sequence'
-pass_fixture
+# 8. 会话保活打卡测试 (keepalive_account)
+: > "$trace_file"
+touch "/tmp/feiyoung_cookie_1" "/tmp/feiyoung_cookie_2"
+curl() {
+    printf 'keepalive args=%s\n' "$*" >> "$trace_file"
+}
+keepalive_account 1
+wait $! 2>/dev/null || true
+assert_true "PC keepalive targeting pc/logon.jsp" grep -q "/style/school_hbct/pc/logon.jsp" "$trace_file"
 
-start_fixture mobile_bootstrap_redirect mobile
-init_common "$gateway/"
-assert_eq 4 "$(cat "$RUN_DIR/sequence")" 'mobile bootstrap redirect request count'
-assert_file_contains "$RUN_DIR/requests/001.log" 'ua=MOBILE-UA' 'bootstrap initial mobile UA'
-assert_file_contains "$RUN_DIR/requests/002.log" 'ua=PC-UA' 'bootstrap redirect root UA'
-assert_file_contains "$RUN_DIR/requests/003.log" 'ua=PC-UA' 'bootstrap redirected terminal desktop UA'
-assert_file_contains "$RUN_DIR/requests/004.log" 'ua=MOBILE-UA' 'bootstrap terminal mobile reGET UA'
-assert_file_contains "$RUN_DIR/requests/003.log" 'url=http://portal.test:8001/style/school_hbct/mobile/index.jsp?paramStr=BOOT_TOKEN' 'bootstrap redirected terminal URL'
-assert_file_contains "$RUN_DIR/requests/004.log" 'url=http://portal.test:8001/style/school_hbct/mobile/index.jsp?paramStr=BOOT_TOKEN' 'bootstrap mobile reGET URL'
-assert_file_contains "$RUN_DIR/requests/004.log" 'cookie_before=0' 'bootstrap cookie cleared before mobile reGET'
-assert_ua_sequence 'MOBILE-UA/PC-UA/PC-UA/MOBILE-UA' 'bootstrap exact UA sequence'
-pass_fixture
+keepalive_account 2
+wait $! 2>/dev/null || true
+assert_true "Mobile keepalive targeting mobile/logon.jsp" grep -q "/style/school_hbct/mobile/logon.jsp" "$trace_file"
+rm -f "/tmp/feiyoung_cookie_1" "/tmp/feiyoung_cookie_2"
 
-for failing_fixture in final_412 final_empty final_curl; do
-    start_fixture "$failing_fixture" mobile
-    paramStr='STALE_PARAM'
-    fyhtml='STALE_HTML'
-    PAGE_URL="$gateway/stale"
-    PAGE_BODY='STALE_BODY'
-    auth_ready=1
-    auth_client_type=mobile
-    printf 'stale-cookie\n' > "$COOKIE_JAR"
-    PORTAL_URL="$gateway/"
-    if init_network; then
-        fail 'selected final page unexpectedly accepted'
-    fi
-    assert_eq 0 "$auth_ready" "$failing_fixture auth_ready reset"
-    assert_eq '' "$paramStr" "$failing_fixture paramStr reset"
-    assert_eq '' "$PORTAL_URL" "$failing_fixture PORTAL_URL reset"
-    assert_eq '' "$fyhtml" "$failing_fixture fyhtml reset"
-    assert_eq '' "$PAGE_URL" "$failing_fixture PAGE_URL reset"
-    assert_eq '' "$PAGE_BODY" "$failing_fixture PAGE_BODY reset"
-    assert_eq '' "$auth_client_type" "$failing_fixture auth client type reset"
-    assert_true "$failing_fixture cookie removed" test ! -e "$COOKIE_JAR"
-    before_login=$(cat "$RUN_DIR/sequence")
-    if login; then
-        fail "$failing_fixture login unexpectedly accepted"
-    fi
-    assert_eq "$before_login" "$(cat "$RUN_DIR/sequence")" "$failing_fixture login does not call curl"
-    pass_fixture
-done
-
-start_fixture frame_external mobile
-if init_network; then
-    fail 'external frame unexpectedly accepted'
-fi
-assert_eq 0 "$auth_ready" 'external frame auth_ready reset'
-assert_eq 2 "$(cat "$RUN_DIR/sequence")" 'external frame request count'
-assert_requests_not_contains 'evil.test' 'external frame no evil request'
-pass_fixture
-
-start_fixture redirect_external pc
-PORTAL_URL="$gateway/"
-if init_network; then
-    fail 'external redirect unexpectedly accepted'
-fi
-assert_eq 0 "$auth_ready" 'external redirect auth_ready reset'
-assert_eq 1 "$(cat "$RUN_DIR/sequence")" 'external redirect request count'
-assert_file_not_contains "$RUN_DIR/requests/001.log" 'evil.test' 'external redirect no evil request'
-pass_fixture
-
-start_fixture login_success pc
-init_common "$gateway/style/school_hbct/pc/index.jsp?paramStr=LOGIN_TOKEN"
-if ! login; then
-    fail 'login success fixture failed'
-fi
-assert_eq 2 "$(cat "$RUN_DIR/sequence")" 'login request count'
-assert_file_contains "$RUN_DIR/requests/002.log" 'method=POST' 'login method'
-assert_file_contains "$RUN_DIR/requests/002.log" 'ua=PC-UA' 'login UA'
-assert_file_contains "$RUN_DIR/requests/002.log" 'cookie_before=1' 'login cookie'
-assert_file_contains "$RUN_DIR/requests/002.log" 'referer=http://portal.test:8001/style/school_hbct/pc/index.jsp?paramStr=LOGIN_TOKEN' 'login mode Referer'
-assert_file_contains "$RUN_DIR/requests/002.log" 'data=UserType=1&paramStr=LOGIN_TOKEN&pwdType=1&aidcauthtype=0&vfcodeflg=false' 'login fixed fields'
-assert_file_contains "$RUN_DIR/requests/002.log" $'data_urlencoded=UserName=demo-user\nPassWord=demo-pass' 'login encoded credentials'
-assert_file_contains "$RUN_DIR/requests/002.log" 'fixed_fields=5' 'login fixed field count'
-assert_file_contains "$RUN_DIR/requests/002.log" 'encoded_fields=2' 'login encoded field count'
-assert_file_contains "$RUN_DIR/requests/002.log" 'total_fields=7' 'login total field count'
-pass_fixture
-
-for keepalive_fixture in keepalive_200 keepalive_500; do
-    start_fixture "$keepalive_fixture" pc
-    PORTAL_URL="$gateway/style/school_hbct/pc/index.jsp?paramStr=KEEPALIVE_TOKEN"
-    printf 'cookie\n' > "$COOKIE_JAR"
-    if [ "$keepalive_fixture" = keepalive_200 ]; then
-        if ! keepalive; then
-            fail 'keepalive 200 rejected'
-        fi
-    else
-        if keepalive; then
-            fail 'keepalive 500 accepted'
-        fi
-    fi
-    assert_eq 1 "$(cat "$RUN_DIR/sequence")" "$keepalive_fixture request count"
-    assert_file_contains "$RUN_DIR/requests/001.log" 'output=/dev/null' "$keepalive_fixture output sink"
-    assert_file_contains "$RUN_DIR/requests/001.log" 'writeout=%{http_code}' "$keepalive_fixture write-out"
-    assert_file_contains "$RUN_DIR/requests/001.log" 'url=http://portal.test:8001/style/school_hbct/pc/logon.jsp' "$keepalive_fixture endpoint"
-    assert_file_contains "$RUN_DIR/requests/001.log" 'cookie_before=1' "$keepalive_fixture cookie"
-    assert_file_contains "$RUN_DIR/requests/001.log" 'referer=http://portal.test:8001/style/school_hbct/pc/index.jsp?paramStr=KEEPALIVE_TOKEN' "$keepalive_fixture referer"
-    pass_fixture
-done
-
-printf 'PASS summary fixtures=%d assertions=%d\n' "$pass_fixtures" "$total_assertions"
+printf 'PASS: authentication flow, WAF bypass, status probing, and keepalive assertions=%d\n' "$assertions"

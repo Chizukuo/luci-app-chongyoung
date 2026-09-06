@@ -41,6 +41,8 @@ assert_false() {
 
 # Route and ARP probes use the same mocked WAN device selected by the real functions.
 source <(sed -n '/^get_wan_device() {/,/^}/p' "$src")
+source <(sed -n '/^get_lan_device() {/,/^}/p' "$src")
+source <(sed -n '/^get_dev_gw() {/,/^}/p' "$src")
 source <(sed -n '/^ensure_default_route() {/,/^}/p' "$src")
 source <(sed -n '/^check_gateway_alive() {/,/^}/p' "$src")
 log() { :; }
@@ -129,6 +131,7 @@ assert_false test -e "$test_root/disabled_radios"
 source <(sed -n '/^cleanup() {/,/^}/p' "$src")
 # Keep cleanup's logger fully local even if a sourced function changes the shell scope.
 log() { :; }
+teardown_mwan_routing() { :; }
 touch "$test_root/status" "$test_root/online" "$test_root/wan_paused"
 ip() { :; }
 ifup() { :; }
