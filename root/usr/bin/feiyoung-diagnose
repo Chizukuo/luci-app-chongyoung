@@ -1,0 +1,270 @@
+#!/bin/sh
+# Read-only diagnostics: default mode is passive; --portal performs only
+# bounded GET probes and never authenticates or changes network/configuration.
+
+BUILD='2.2.0-1'
+SYSFS=${SYSFS:-/sys}
+PROCFS=${PROCFS:-/proc}
+STATUS_FILE=${STATUS_FILE:-/tmp/feiyoung_status}
+
+portal_cleanup() {
+	case "$PORTAL_TMP" in
+		"$PORTAL_PARENT"/*) : ;;
+		*) exit 1 ;;
+	esac
+	[ -d "$PORTAL_TMP" ] || exit 1
+	rm -rf -- "$PORTAL_TMP"
+}
+
+portal_fields() {
+	category="$1"; body="$2"
+	tr '<' '\n' < "$body" | awk -v category="$category" '
+	function attr(tag, key, rest, quote, end) {
+		if (!match(tag, "(^|[ \t])" key "[ \t]*=[ \t]*")) return ""
+		rest=substr(tag, RSTART + RLENGTH); quote=substr(rest, 1, 1)
+		if (quote == "\"" || quote == "\047") { end=index(substr(rest, 2), quote); if (end == 0) return ""; return substr(rest, 2, end - 1) }
+		if (match(rest, /^[^ \t>]+/)) return substr(rest, RSTART, RLENGTH)
+		return ""
+	}
+	/^(form|input)([ >]|$)/ {
+		tag=$0; sub(/>.*/, "", tag); name=attr(tag, "name")
+		if (name ~ /^[A-Za-z0-9_]+$/ && length(name) <= 64) names[name]=1
+		if (substr(tag, 1, 5) == "input") { value=attr(tag, "value"); if (name == "UserType" || name == "pwdType" || name == "aidcauthtype" || name == "vfcodeflg") if (value ~ /^[0-9]+$/ || value == "true" || value == "false") values[name]=value }
+	}
+	END {
+		first=1; printf "portal.%s.fields=", category; for (field in names) { if (!first) printf ","; printf "%s", field; first=0 }; printf "\n"
+		for (i=1; i<=4; i++) { field=(i==1?"UserType":i==2?"pwdType":i==3?"aidcauthtype":"vfcodeflg"); if (values[field] == "") values[field]="unknown"; printf "portal.%s.%s=%s\n", category, field, values[field] }
+	}
+'
+}
+
+portal_probe_one() {
+	category="$1"; ua="$2"; origin="$3"; path="$4"
+	body="$PORTAL_TMP/${category}.body"; headers="$PORTAL_TMP/${category}.headers"; effective="$PORTAL_TMP/${category}.effective"
+	url="$origin$path"
+	curl -q -sS -L --max-redirs 3 --connect-timeout 3 --max-time 10 --max-filesize 262144 \
+		--proto '=http,https' --proto-redir '=http,https' -A "$ua" -H 'Cookie:' \
+		-D "$headers" -o "$body" -w '%{url_effective}' > "$effective" "$url" 2>/dev/null
+	curl_rc=$?
+	if [ ! -f "$body" ] || [ ! -f "$headers" ] || [ ! -f "$effective" ]; then
+		printf 'portal.%s template=unknown curl_rc=%s http_code=unknown error=missing_output\n' "$category" "$curl_rc"
+		return 0
+	fi
+	bytes=$(wc -c < "$body" 2>/dev/null | tr -d ' ')
+	case "$bytes" in ''|*[!0-9]*) bytes=unknown ;; esac
+	if [ "$bytes" != unknown ] && [ "$bytes" -gt 262144 ]; then
+		printf 'portal.%s template=unknown curl_rc=%s http_code=unknown error=body_too_large\n' "$category" "$curl_rc"
+		return 0
+	fi
+	http_code=$(sed -n 's#^HTTP/[0-9.]*[[:space:]]\([0-9][0-9][0-9]\).*#\1#p' "$headers" 2>/dev/null | tail -1)
+	[ -n "$http_code" ] || http_code=unknown
+	effective_path=$(sed -n '1p' "$effective" 2>/dev/null | sed 's/[?#].*$//')
+	template=unknown
+	case "$effective_path" in
+		http://58.53.199.144:8001/style/school_hbct/mobile/*|https://58.53.199.144:8001/style/school_hbct/mobile/*) template=mobile ;;
+		http://58.53.199.144:8001/pc/*|https://58.53.199.144:8001/pc/*|http://58.53.199.144:8001/|https://58.53.199.144:8001/) template=pc ;;
+	esac
+	printf 'portal.%s template=%s curl_rc=%s http_code=%s\n' "$category" "$template" "$curl_rc" "$http_code"
+	portal_fields "$category" "$body"
+}
+
+if [ "${1:-}" = '--portal' ]; then
+	umask 077
+	PORTAL_TMP=$(mktemp -d "${TMPDIR:-/tmp}/feiyoung-portal.XXXXXX") || { printf 'portal.error=mktemp_failed\n'; exit 0; }
+	PORTAL_PARENT=${PORTAL_TMP%/*}
+	trap portal_cleanup EXIT HUP INT TERM
+	portal_probe_one pc_root 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0.0.0 Safari/537.36' 'http://58.53.199.144:8001' '/'
+	portal_probe_one mobile_root 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/151.0.0.0 Mobile Safari/537.36' 'http://58.53.199.144:8001' '/'
+	portal_probe_one mobile_template 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/151.0.0.0 Mobile Safari/537.36' 'http://58.53.199.144:8001' '/style/school_hbct/mobile/index.jsp'
+	exit 0
+fi
+
+if [ -n "${1:-}" ]; then
+	printf 'diagnostics.error=unknown_option\n'
+	exit 0
+fi
+
+kv() {
+	key="$1"; value="$2"
+	printf '%s=%s\n' "$key" "${value:-unknown}"
+}
+
+uci_value() {
+	value=$(uci -q get "$1" 2>/dev/null)
+	[ -n "$value" ] && printf '%s' "$value" || printf 'unknown'
+}
+
+printf 'FEIYOUNG_DIAGNOSTICS build=%s\n' "$BUILD"
+kv 'version' '2.2.0'
+kv 'sample.utc' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+if [ -r "$PROCFS/uptime" ]; then
+	kv 'uptime.seconds' "$(awk '{print $1; exit}' "$PROCFS/uptime")"
+else
+	kv 'uptime.seconds' 'unknown'
+fi
+kv 'uname.sysname' "$(uname -s 2>/dev/null)"
+kv 'uname.release' "$(uname -r 2>/dev/null)"
+kv 'uname.machine' "$(uname -m 2>/dev/null)"
+if command -v opkg >/dev/null 2>&1; then
+	package_version=$(opkg status luci-app-feiyoung 2>/dev/null | awk -F': ' '$1 == "Version" { print $2; exit }')
+	kv 'opkg.version' "$package_version"
+else
+	kv 'opkg.version' 'unknown (opkg unavailable)'
+fi
+
+if command -v jsonfilter >/dev/null 2>&1 && command -v ubus >/dev/null 2>&1; then
+	board=$(ubus call system board 2>/dev/null)
+	model=$(printf '%s' "$board" | jsonfilter -e '@.model' 2>/dev/null)
+	release=$(printf '%s' "$board" | jsonfilter -e '@.release.version' 2>/dev/null)
+	target=$(printf '%s' "$board" | jsonfilter -e '@.release.target' 2>/dev/null)
+	kv 'board.model' "$model"
+	kv 'board.release' "$release"
+	kv 'board.target' "$target"
+else
+	kv 'board.model' 'unsupported (ubus/jsonfilter unavailable)'
+	kv 'board.release' 'unsupported (ubus/jsonfilter unavailable)'
+	kv 'board.target' 'unsupported (ubus/jsonfilter unavailable)'
+fi
+
+if [ -r "$STATUS_FILE" ]; then
+	status=$(sed -n '1p' "$STATUS_FILE" 2>/dev/null)
+	kv 'feiyoung.status' "$status"
+else
+	kv 'feiyoung.status' 'unknown'
+fi
+
+for option in enabled passType check_interval connect_timeout total_timeout pause_enabled pause_disconnect_wan client_type diagnostics; do
+	printf 'config.%s=%s\n' "$option" "$(uci_value "feiyoung.general.$option")"
+done
+
+configured_client_type=$(uci_value 'feiyoung.general.client_type')
+case "$configured_client_type" in
+	pc|mobile) effective_client_type="$configured_client_type" ;;
+	*) effective_client_type=pc ;;
+esac
+configured_diagnostics=$(uci_value 'feiyoung.general.diagnostics')
+[ "$configured_diagnostics" = 1 ] && effective_diagnostics=1 || effective_diagnostics=0
+printf 'effective.client_type=%s\n' "$effective_client_type"
+printf 'effective.diagnostics=%s\n' "$effective_diagnostics"
+for mode in pc mobile; do
+	if [ -f "/tmp/feiyoung_cookie_$mode" ]; then
+		printf 'cookie.%s.exists=true\n' "$mode"
+	else
+		printf 'cookie.%s.exists=false\n' "$mode"
+	fi
+done
+
+if command -v jsonfilter >/dev/null 2>&1 && command -v ubus >/dev/null 2>&1; then
+	wan=$(ubus call network.interface.wan status 2>/dev/null)
+	for field in up proto device l3_device; do
+		value=$(printf '%s' "$wan" | jsonfilter -e "@.$field" 2>/dev/null)
+		[ -n "$value" ] || value=unknown
+		printf 'wan.%s=%s\n' "$field" "$value"
+	done
+else
+	for field in up proto device l3_device; do
+		printf 'wan.%s=unsupported (ubus/jsonfilter unavailable)\n' "$field"
+	done
+fi
+
+printf '%s\n' 'interfaces:'
+for path in "$SYSFS"/class/net/*; do
+	[ -e "$path" ] || continue
+	dev=${path##*/}
+	printf 'interface name=%s' "$dev"
+	for field in operstate speed duplex; do
+		value=$(sed -n '1p' "$path/$field" 2>/dev/null)
+		[ -n "$value" ] || value=unknown
+		printf ' %s=%s' "$field" "$value"
+	done
+	for field in rx_bytes tx_bytes rx_errors tx_errors rx_dropped tx_dropped; do
+		value=$(sed -n '1p' "$path/statistics/$field" 2>/dev/null)
+		[ -n "$value" ] || value=unknown
+		printf ' %s=%s' "$field" "$value"
+	done
+	printf '\n'
+done
+
+if [ -r "$PROCFS/loadavg" ]; then
+	printf 'loadavg=%s\n' "$(sed -n '1p' "$PROCFS/loadavg")"
+else
+	kv 'loadavg' 'unknown'
+fi
+if [ -r "$PROCFS/stat" ]; then
+	awk '$1 == "cpu" { print "procstat=" $0; exit }' "$PROCFS/stat"
+else
+	kv 'procstat' 'unknown'
+fi
+
+if [ -e /etc/feiyoung.user ]; then
+	kv 'user_hook.exists' 'true'
+	[ -x /etc/feiyoung.user ] && kv 'user_hook.executable' 'true' || kv 'user_hook.executable' 'false'
+else
+	kv 'user_hook.exists' 'false'
+	kv 'user_hook.executable' 'false'
+fi
+
+printf '%s\n' 'sqm:'
+if command -v uci >/dev/null 2>&1; then
+	seen=0
+	i=0
+	while [ "$i" -lt 32 ]; do
+		section=$(uci -q get "sqm.@queue[$i]" 2>/dev/null)
+		[ -n "$section" ] || break
+		enabled=$(uci -q get "sqm.@queue[$i].enabled" 2>/dev/null)
+		interface=$(uci -q get "sqm.@queue[$i].interface" 2>/dev/null)
+		download=$(uci -q get "sqm.@queue[$i].download" 2>/dev/null)
+		upload=$(uci -q get "sqm.@queue[$i].upload" 2>/dev/null)
+		if [ -n "$enabled$interface$download$upload" ]; then
+			printf 'queue index=%s enabled=%s interface=%s download=%s upload=%s\n' "$i" "${enabled:-unknown}" "${interface:-unknown}" "${download:-unknown}" "${upload:-unknown}"
+			seen=1
+		fi
+		i=$((i + 1))
+	done
+	[ "$seen" -eq 1 ] || printf '%s\n' 'queue=unknown'
+else
+	printf '%s\n' 'queue=unsupported (uci unavailable)'
+fi
+
+for option in flow_offloading flow_offloading_hw; do
+	printf 'firewall.%s=%s\n' "$option" "$(uci_value "firewall.@defaults[0].$option")"
+done
+
+if command -v tc >/dev/null 2>&1; then
+	printf '%s\n' 'tc.qdisc:'
+	if ! qdisc_output=$(tc qdisc show 2>/dev/null); then
+		printf '%s\n' 'query_failed=qdisc'
+	else
+	printf '%s\n' "$qdisc_output" | awk '{
+		kind=$2; if (kind == "") next; out="kind=" kind
+		for (i=1; i<=NF; i++) if ($i == "dev" && (i+1)<=NF) out=out " dev=" $(i+1)
+		for (i=1; i<=NF; i++) if ($i == "rate" || $i == "ceil" || $i == "bandwidth" || $i == "limit") { if ((i+1)<=NF) out=out " " $i "=" $(i+1) }
+		print out
+	}'
+	fi
+	printf '%s\n' 'tc.class:'
+	for path in "$SYSFS"/class/net/*; do
+		[ -e "$path" ] || continue
+		dev=${path##*/}
+		if ! class_output=$(tc class show dev "$dev" 2>/dev/null); then
+			printf 'query_failed=class dev=%s\n' "$dev"
+			continue
+		fi
+		printf '%s\n' "$class_output" | awk -v dev="$dev" '{
+		kind=$2; if (kind == "") next; out="kind=" kind
+		for (i=1; i<=NF; i++) if ($i == "rate" || $i == "ceil" || $i == "bandwidth" || $i == "limit") { if ((i+1)<=NF) out=out " " $i "=" $(i+1) }
+		print "dev=" dev " " out
+	}'
+	done
+else
+	printf '%s\n' 'tc=unsupported (tc unavailable)'
+fi
+
+printf 'events.prefix=FEIYOUNG_DIAG build=%s\n' "$BUILD"
+if command -v logread >/dev/null 2>&1; then
+	logread 2>/dev/null | grep "FEIYOUNG_DIAG build=$BUILD" | tail -n 1000 | sed -E \
+		-e 's#https?://[^[:space:]]+#<url-redacted>#g' \
+		-e 's#(user(name)?|password|passwd|cookie|token|paramStr)[=:][^[:space:]]+#\1=<redacted>#Ig'
+else
+	printf '%s\n' 'events=unsupported (logread unavailable)'
+fi
