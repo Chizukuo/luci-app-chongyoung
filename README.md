@@ -20,10 +20,13 @@ OpenWrt LuCI support for FeiYoung Campus Network Auto Login.
 ## 核心特性
 
 - **静态密码直连**：仅需配置手机号与 6 位密码，开机与断网后全自动完成身份验证。
-- **动态门户发现**：通过连通性探测发现网关拦截重定向，只接受与配置的 gateway 同源的门户地址，并提取认证参数；门户 host 或 port 变更时需要更新配置。
+- **多账号与多终端形态并发（PC + Mobile）**：支持在 Web 界面配置多个账号会话（同一手机号 PC 与 Mobile 终端形态并发，或多个不同账号并发），多通道独立状态探测与秒级重连自愈。
+- **纯内存（RAM-only）黏性连接负载聚合**：基于 nftables 会话跟踪与策略路由分流，单连接强黏性防跳 IP（避免网页 Refuse 或测速中断），零 Flash 写入，服务停止毫秒级平滑释放。
+- **动态门户发现**：通过纯 IP 请求触发网关拦截重定向，自动提取 `userip`、`nasip`、`usermac` 与 `paramStr`，校园网节点变动无需重新配置。
 - **双重存活研判**：结合 ICMP Ping 与 HTTP 状态码双重探测，精准识别上游机房 302 踢线，同时消除晚高峰偶发丢包导致的误断网。
-- **按模式发送保活请求**：每 5 分钟按已选择的 PC 或 mobile 模式发送保活请求。
+- **会话定时打卡保活**：各在线会话每 5 分钟轻量访问一次认证页面刷新 Cookie，防止机房 BRAS 因长连接或游戏纯 UDP 流量误判空闲超时踢线下线。
 - **交换机防刷保护与极速自愈**：监控网关二层 ARP 状态，在租约失效时主动重置；内置 60 秒防抖冷却锁，彻底杜绝高频 DHCP 请求触发机房接入交换机（如华为 S5320）的泛洪限速惩罚。
+- **解耦式用户扩展钩子 (`/etc/feiyoung.user`)**：核心纯净通用，进阶个性化需求（如虚拟通道独立 SQM 流控、第三方插件联动）通过规范回调处理，并自动在系统升级配置（`sysupgrade.conf`）中永久固化。
 - **缺省路由兜底**：机房 DHCP 偶发不下发默认网关时，自动检测并静态补齐默认路由，确保网络通信正常。
 - **极简依赖与原生架构**：核心仅依赖系统内置的 `curl` 与 Shell 工具链；无缝集成 OpenWrt Procd 守护进程架构，开机自启、崩溃自愈、毫秒级平滑退出。
 - **双轨全固件兼容**：同时适配现代 LuCI `menu.d` JSON 菜单定义与传统 Lua 控制器，覆盖 OpenWrt 21.02 至 25.12+ 全世代固件。
@@ -33,7 +36,8 @@ OpenWrt LuCI support for FeiYoung Campus Network Auto Login.
 
 ## 版本推荐
 
-- **v2.2.0 (当前推荐)**：支持 PC/mobile 门户模式选择、按模式发送保活请求与可选诊断日志。
+- **v2.2.0 (当前推荐)**：新增多账号/多终端（PC + Mobile）并发多拨、基于 nftables 的纯内存（RAM-only）黏性连接负载聚合、解耦式用户扩展钩子，具备完整的交换机防刷保护、会话保活、全架构网卡自适应与秒级自愈能力。
+- **v2.1.3**：单 WAN 稳定版，具备完整的交换机防刷保护、会话保活、全架构网卡自适应、无 RTC 开机时钟防死锁与秒级自愈能力。
 - **v1.9.2 及更早**：仅适用于旧版 XML 接口认证（`http://100.64.0.1`），现已失效。
 
 ---
@@ -82,44 +86,55 @@ apk add --allow-untrusted /tmp/luci-app-feiyoung_*.apk
 
 1. 登录路由器 OpenWrt 管理后台。
 2. 进入导航栏：`服务 (Services)` -> `FeiYoung Network`。
-3. **基础设置**：
+3. **全局设置**：
    - 勾选 `启用 (Enable)`。
-   - 输入 `手机号 (Phone Number)`。
-   - 输入 `密码 (Password)`（即你在校园网认证页面使用的 6 位静态密码）。
-4. 点击页面右下角的 `保存并应用 (Save & Apply)`。
+   - 勾选 `多拨聚合 (Multi-Dial Aggregation)`（启用纯内存黏性会话跟踪与策略路由分流，单线测速/游戏不跳 IP）。
+4. **账号与会话设置 (Accounts / Sessions)**：
+   - 点击 `添加` 创建一个或多个认证会话：
+     - **终端类型**：支持 `PC Client` 与 `Mobile Client`。
+       > [!TIP]
+       > 同一个校园网手机号支持**同时在线 1 个 PC 终端与 1 个移动终端**。你可以直接添加两条记录（相同的手机号与密码，一条选 PC Client，一条选 Mobile Client），即可在不增加账号成本的前提下实现单号双拨双倍带宽聚合！
+     - **手机号**：输入校园网认证手机号。
+     - **密码**：输入 6 位静态认证密码。
+     - **MAC 地址**：留空自动分配；多拨虚拟接口会自动派生合法局域网 MAC 地址。
+5. 点击页面右下角的 `保存并应用 (Save & Apply)`。
 
-在“认证模式”中选择 `PC（电脑）` 或 `手机`，默认值为 `PC（电脑）`。选择会在下一次认证时生效；已有会话需要先在校园网门户退出再重新认证。能否与另一类终端同时在线取决于认证服务器策略。
+保存后，守护进程将在数秒内自适应创建多拨接口、感应门户重定向、并发完成身份验证并应用黏性多拨路由规则，实时在 Web 概览中汇总展示每条会话的链路与 IP。
 
-保存并应用后使用新配置；已有在线会话不会被强制注销或重拨，未认证时按所选模式发现门户并尝试登录。
+---
+
+## 自定义用户联动扩展 (`/etc/feiyoung.user`)
+
+为了保证插件核心逻辑的高可用、跨平台与纯净通用性，个性化定制需求（如第三方插件联动、高级 QoS 流控等）严格与核心解耦，通过 `/etc/feiyoung.user` 钩子承载。
+
+插件在所有会话就绪网络连通时传入参数 `online` 调用该脚本；在全部断开或休眠时传入 `offline` 调用。该文件已内置自动加入 `/etc/sysupgrade.conf`，固件升级与刷机均不丢失。
+
+**典型应用：双线独立 SQM 流控与 AdBlock 联动示例 (`/etc/feiyoung.user`)**：
+```bash
+#!/bin/sh
+event="$1"
+
+if [ "$event" = "online" ]; then
+    # 1. 联动启动/刷新 AdBlock-Fast（若已在运行则跳过，避免重启 dnsmasq 造成网络卡顿）
+    [ -x /etc/init.d/adblock-fast ] && [ ! -s /dev/shm/adblock-fast ] && /etc/init.d/adblock-fast start >/dev/null 2>&1 &
+    
+    # 2. 联动多拨虚拟通道 SQM 流控（为 vwan1 动态启动独立队列）
+    if [ -d /sys/class/net/vwan1 ] && [ -x /usr/lib/sqm/run.sh ]; then
+        if ! tc qdisc show dev vwan1 2>/dev/null | grep -q "htb"; then
+            /usr/lib/sqm/run.sh start vwan1 >/dev/null 2>&1 &
+        fi
+    fi
+elif [ "$event" = "offline" ]; then
+    [ -x /usr/lib/sqm/run.sh ] && /usr/lib/sqm/run.sh stop vwan1 >/dev/null 2>&1 || true
+    ip link delete ifb4vwan1 2>/dev/null || true
+fi
+```
 
 ---
 
 ## 排错与日志观测
 
-如需排查网络故障，可通过 SSH 连接路由器执行只读诊断。“详细诊断日志”默认关闭，可在 LuCI 中启用；也可通过 UCI 设置，下一轮读取配置时生效：
-
-```bash
-uci set feiyoung.general.diagnostics='1'
-uci commit feiyoung
-```
-
-关闭日志：
-
-```bash
-uci set feiyoung.general.diagnostics='0'
-uci commit feiyoung
-```
-
-手动执行 `feiyoung-diagnose` 不依赖“详细诊断日志”开关：
-
-```bash
-/usr/bin/feiyoung-diagnose
-/usr/bin/feiyoung-diagnose --portal
-```
-
-`--portal` 只执行受限 GET 探测，不提交认证信息。诊断输出只报告 PC/mobile 会话文件是否存在，不输出 Cookie 内容。
-
-如需观察守护进程行为，可执行：
+如需排查网络故障或观察守护进程行为，可通过 SSH 连接路由器执行查看：
 
 ```bash
 # 查看最近的运行日志
@@ -131,10 +146,9 @@ logread -f -e feiyoung
 
 ### 典型日志释义
 
-- `系统 NTP 时间同步成功`：已完成系统时间校准，定时休眠与调度系统已就绪。
-- `检测到网络已上线`：认证成功且连通性校验通过，已触发外部联动任务。
-- `网络断开，开始重连`：检测到无法访问外部网络或被机房 302 拦截重定向，守护进程进入自愈流程。
-- `未发现认证门户`：重定向探测未返回合法门户特征，通常出现在上游物理网线未接通、或当前 IP 租约已被机房废弃时。
+- `网络已上线，执行自定义用户脚本 (/etc/feiyoung.user online)`：所有/可用会话认证成功且连通性校验通过，已触发外部用户联动。
+- `多拨黏性聚合规则已生效！`：多网卡路由表与 nftables 会话跟踪规则加载完成，已实现多通道出向流量智能分流。
+- `检测到会话 X (...) 离线，正在尝试认证...`：独立通道健康检查触发自愈，不影响其余在线通道的持续通信。
 - `WAN 口最近已执行过重置，处于 60s 冷却保护中`：触发防泛洪保护，避免短时间内连续 DHCP 广播导致被机房接入交换机惩罚。
 
 ---
@@ -143,10 +157,14 @@ logread -f -e feiyoung
 
 ### 版本历史
 
-**v2.2.0** (2026-09-05) - 客户端模式与诊断能力
-- 支持 PC/mobile 门户模式选择，下一次认证生效；已有会话需退出门户后重新认证。
-- 每 5 分钟按选择的门户模式发送保活请求。
-- 新增默认关闭的诊断日志与只读诊断命令。
+**v2.2.0** (2026-09-06) - 多账号/多终端形态并发认证与黏性带宽聚合
+- **多会话并发架构**：Web UI 升级为动态表格（`TableSection`），支持添加多条账号/会话记录（支持单手机号 PC + Mobile 并发在线，或多账号并发）；各会话独立状态检测、秒级独立自愈与打卡保活。
+- **虚拟链路与 MAC 隔离**：基于物理 WAN 动态派生轻量 macvlan 虚拟网卡（`vwan*`），自动生成合法局域网 MAC 地址并分配隔离的策略路由表。
+- **纯内存黏性连接聚合**：基于 nftables 会话跟踪（`numgen map`）与策略路由分流，实现多链路带宽无缝叠加（实测下行突破 270Mbps，上行突破 50Mbps），强连接黏性彻底解决多拨跳 IP 导致的网页 Refuse/测速中断问题。
+- **极速优雅清理与热插拔自愈**：单线掉线自动平滑降级，所有会话断开或服务停止时 100% 自动清理虚拟网卡、nft 规则表与策略路由，零 Flash 擦写损耗。
+- **解耦式用户扩展脚本机制**：规范 `/etc/feiyoung.user` 钩子并在升级时自动保全，支持用户按需扩展自定义 SQM 流控、Adblock 联动等个性化任务，插件本体代码保持 100% 纯净通用。
+- **配置自动无缝迁移**：内置升级迁移脚本，旧版 v2.1 单账号配置升级后全自动平滑无感升级为首个会话条目。
+- 感谢 [@kltyton](https://github.com/kltyton) 在 PR #2 中提供移动端认证接口原型与探索。
 
 **v2.1.3** (2026-09-06) - 稳定性与全架构跨硬件兼容加固
 - 动态网关保活：会话保活打卡由静态网关改造为动态提取门户 Base URL，自动兼容多校区与网关变更。
@@ -212,7 +230,6 @@ logread -f -e feiyoung
 │   ├── etc/init.d/feiyoung         # Procd 系统服务启动脚本
 │   ├── etc/uci-defaults/99_feiyoung  # 版本平滑升级数据迁移脚本
 │   ├── usr/bin/feiyoung.sh         # 核心后台守护进程
-│   ├── usr/bin/feiyoung-diagnose   # 只读诊断命令
 │   └── usr/share/
 │       ├── luci/menu.d/luci-app-feiyoung.json  # 现代 LuCI 菜单清单
 │       └── rpcd/acl.d/luci-app-feiyoung.json   # RPC 权限声明

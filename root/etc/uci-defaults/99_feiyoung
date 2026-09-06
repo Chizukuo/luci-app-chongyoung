@@ -21,8 +21,7 @@ uci -q delete feiyoung.daily
 # 补充新字段默认值
 [ -z "$(uci -q get feiyoung.general.passType)" ] && uci set feiyoung.general.passType='1'
 [ -z "$(uci -q get feiyoung.general.gateway)" ] && uci set feiyoung.general.gateway='http://58.53.199.144:8001'
-
-uci commit feiyoung
+[ -z "$(uci -q get feiyoung.general.load_balancing)" ] && uci set feiyoung.general.load_balancing='1'
 
 # 合并 opkg 备份的配置文件（如果存在）
 if [ -f /etc/config/feiyoung-opkg ]; then
@@ -37,9 +36,21 @@ if [ -f /etc/config/feiyoung-opkg ]; then
     [ -n "$OLD_USERNAME" ] && uci set feiyoung.general.username="$OLD_USERNAME"
     [ -n "$OLD_PWD" ] && uci set feiyoung.general.password="$OLD_PWD"
 
-    uci commit feiyoung
     rm -f /etc/config/feiyoung_backup
 fi
+
+# v2.2 配置迁移：若 general 中包含旧版 username，且没有 account 节，自动转换为首个 account
+if [ -n "$(uci -q get feiyoung.general.username)" ] && [ -z "$(uci -q show feiyoung | grep '=account')" ]; then
+    SEC=$(uci add feiyoung account)
+    uci set feiyoung."$SEC".enabled="$(uci -q get feiyoung.general.enabled || echo 1)"
+    uci set feiyoung."$SEC".client_type="pc"
+    uci set feiyoung."$SEC".username="$(uci -q get feiyoung.general.username)"
+    uci set feiyoung."$SEC".password="$(uci -q get feiyoung.general.password)"
+    uci -q delete feiyoung.general.username
+    uci -q delete feiyoung.general.password
+fi
+
+uci commit feiyoung
 
 # 删除废弃的每日密码计算脚本
 rm -f /usr/share/feiyoung/calc_pwd.lua

@@ -18,6 +18,10 @@ start_service() {
 	fi
 }
 
+stop_service() {
+	/usr/bin/feiyoung.sh stop 2>/dev/null
+}
+
 reload_service() {
 	stop
 	start

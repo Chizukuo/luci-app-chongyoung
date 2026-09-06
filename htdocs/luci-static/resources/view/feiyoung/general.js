@@ -22,6 +22,39 @@ var callInitAction = rpc.declare({
 	expect: { result: false }
 });
 
+// Helper: 格式化状态文本为可视化 DOM 结构
+function formatStatusNode(raw) {
+	var status = raw ? raw.trim() : _('Not Running');
+	var lines = status.split('\n');
+	var summary = lines[0];
+
+	var color = 'green';
+	if (summary.indexOf('重连') !== -1 || summary.indexOf('失败') !== -1) {
+		color = 'red';
+	} else if (summary.indexOf('休眠') !== -1) {
+		color = 'orange';
+	} else if (summary === _('Not Running') || summary.indexOf('未运行') !== -1) {
+		color = 'grey';
+	}
+
+	var wrapper = E('div', { 'style': 'line-height: 1.6;' }, [
+		E('div', { 'style': 'color:' + color + '; font-weight:bold; font-size:105%;' }, summary)
+	]);
+
+	if (lines.length > 1) {
+		var ul = E('ul', { 'style': 'margin: 6px 0 0 0; padding-left: 18px; font-family: monospace; font-size: 90%; color: #555;' });
+		for (var i = 1; i < lines.length; i++) {
+			var line = lines[i].trim();
+			if (line) {
+				ul.appendChild(E('li', {}, line));
+			}
+		}
+		wrapper.appendChild(ul);
+	}
+
+	return wrapper;
+}
+
 // 主视图：通过 render() 构建配置页面并返回 DOM 节点
 return view.extend({
 	load: function() {
@@ -33,25 +66,15 @@ return view.extend({
 	render: function(status_initial) {
 		var m, s, o;
 
-		m = new form.Map('feiyoung', _('FeiYoung Network'), _('Configuration for FeiYoung Campus Network Auto Login'));
+		m = new form.Map('feiyoung', _('FeiYoung Network'), _('Configuration for FeiYoung Campus Network Auto Login & Multi-Dial Aggregation'));
 
-		// Status 区块：显示当前脚本运行状态（/tmp/feiyoung_status），并提供重启操作
+		// Status 区块：显示当前运行状态与会话信息，并提供重启操作
 		s = m.section(form.TypedSection, 'global', _('Status'));
 		s.anonymous = true;
 
-		var initial_status = status_initial ? status_initial.trim() : _('Not Running');
-		var initial_color = 'green';
-		if (initial_status.indexOf('重连') !== -1 || initial_status.indexOf('失败') !== -1) {
-			initial_color = 'red';
-		} else if (initial_status.indexOf('休眠') !== -1) {
-			initial_color = 'orange';
-		} else if (initial_status === _('Not Running')) {
-			initial_color = 'grey';
-		}
-
 		o = s.option(form.DummyValue, '_status', _('Current Status'));
 		o.rawhtml = true;
-		o.default = '<span id="feiyoung_status_text" style="color:' + initial_color + '; font-weight:bold">' + initial_status + '</span>';
+		o.default = '<div id="feiyoung_status_container"></div>';
 
 		o = s.option(form.Button, '_restart', _('Action'));
 		o.inputtitle = _('Restart Service');
@@ -68,45 +91,54 @@ return view.extend({
 			});
 		};
 
-		// 定期轮询状态文件并更新界面
+		// 初始状态渲染与定期轮询
 		poll.add(function() {
 			return fs.read('/tmp/feiyoung_status').then(function(status) {
-				var el = document.getElementById('feiyoung_status_text');
+				var el = document.getElementById('feiyoung_status_container');
 				if (el) {
-					status = status ? status.trim() : _('Not Running');
-					var color = 'green';
-					if (status.indexOf('重连') !== -1 || status.indexOf('失败') !== -1) {
-						color = 'red';
-					} else if (status.indexOf('休眠') !== -1) {
-						color = 'orange';
-					} else if (status === _('Not Running')) {
-						color = 'grey';
-					}
-					el.textContent = status;
-					el.style.color = color;
+					el.innerHTML = '';
+					el.appendChild(formatStatusNode(status));
 				}
-			}).catch(function() {});
+			}).catch(function() {
+				var el = document.getElementById('feiyoung_status_container');
+				if (el) {
+					el.innerHTML = '';
+					el.appendChild(formatStatusNode(''));
+				}
+			});
 		});
 
-		// General Settings: 基本配置（启用/手机号/静态密码）
+		// General Settings: 全局总开关与流量聚合
 		s = m.section(form.TypedSection, 'global', _('General Settings'));
 		s.anonymous = true;
 
+		o = s.option(form.Flag, 'enabled', _('Enable Service'));
+		o.rmempty = false;
+
+		o = s.option(form.Flag, 'load_balancing', _('Multi-Dial Aggregation'), _('Enable RAM-only sticky conntrack and policy routing to aggregate bandwidth across all online sessions without packet flapping.'));
+		o.default = '1';
+		o.rmempty = false;
+
+		// Account Settings: 多账号/多会话表格列表
+		s = m.section(form.TableSection, 'account', _('Accounts / Sessions'), _('Configure one or more accounts or device sessions. You can configure multiple sessions with the same phone number (PC + Mobile) or different phone numbers for multi-dial bandwidth aggregation.'));
+		s.anonymous = true;
+		s.addremove = true;
+		s.nodescriptions = true;
+
 		o = s.option(form.Flag, 'enabled', _('Enable'));
 		o.rmempty = false;
+		o.default = '1';
+
+		o = s.option(form.ListValue, 'client_type', _('Client Type'));
+		o.value('pc', _('PC Client'));
+		o.value('mobile', _('Mobile Client'));
+		o.default = 'pc';
 
 		o = s.option(form.Value, 'username', _('Phone Number'));
 		o.rmempty = false;
 
-		o = s.option(form.ListValue, 'client_type', _('认证模式'), _('选择路由器使用的网页认证模式；在下一次认证时生效；已有会话请先在校园网门户退出后重新认证。能否与另一类终端同时在线取决于校园网策略。'));
-		o.value('pc', _('PC（电脑）'));
-		o.value('mobile', _('手机'));
-		o.default = 'pc';
+		o = s.option(form.Value, 'password', _('Password'));
 		o.rmempty = false;
-
-		// Password: 6 位静态密码（直接提交，不再每日算号）
-		o = s.option(form.Value, 'password', _('Password'), _('Enter your 6-digit static password.'));
-		o.rmempty = true;
 		o.datatype = 'string';
 		o.password = true;
 		o.validate = function(section_id, value) {
@@ -116,9 +148,10 @@ return view.extend({
 			return true;
 		};
 
-		o = s.option(form.Flag, 'diagnostics', _('详细诊断日志'), _('记录认证与连接状态，隐藏账号、密码和会话参数；排查问题时开启。'));
-		o.default = '0';
-		o.rmempty = false;
+		o = s.option(form.Value, 'macaddr', _('MAC Address'));
+		o.placeholder = _('Auto');
+		o.datatype = 'macaddr';
+		o.rmempty = true;
 
 		// Scheduled Pause: 配置服务的定时休眠
 		s = m.section(form.TypedSection, 'global', _('Scheduled Pause'), _('Pause the service during specific hours (e.g., when the school network is offline).'));
@@ -166,15 +199,21 @@ return view.extend({
 		o.datatype = 'uinteger';
 		o.placeholder = '10';
 
-		o = s.option(form.Value, 'gateway', _('Portal Gateway'), _('门户地址；只接受与此地址同源的认证入口，域名或端口变化时请更新。'));
+		o = s.option(form.Value, 'gateway', _('Portal Gateway'), _('Portal base URL. Auto-discovered by default via HTTP redirect; this is a fallback.'));
 		o.placeholder = 'http://58.53.199.144:8001';
 
 		o = s.option(form.Value, 'passType', _('Password Type'), _('1 = static password, 2 = dynamic password. Default: 1'));
 		o.datatype = 'uinteger';
 		o.placeholder = '1';
 
-		// Render 完成后追加 footer（项目链接与版本信息）
+		// Render 完成后追加 footer（项目链接与版本信息）并初始化状态显示
 		return m.render().then(function(nodes) {
+			var el = document.getElementById('feiyoung_status_container');
+			if (el) {
+				el.innerHTML = '';
+				el.appendChild(formatStatusNode(status_initial));
+			}
+
 			var footer = E('div', { 'class': 'cbi-section', 'style': 'text-align: center; margin-top: 20px; color: #888;' }, [
 				E('span', {}, _('Project hosted on ')),
 				E('a', { 'href': 'https://github.com/Chizukuo/luci-app-feiyoung', 'target': '_blank', 'style': 'color: #0069b4; text-decoration: none; font-weight: bold;' }, 'GitHub'),
@@ -186,3 +225,4 @@ return view.extend({
 		});
 	}
 });
+
