@@ -133,7 +133,7 @@ else
 	kv 'feiyoung.status' 'unknown'
 fi
 
-for option in enabled passType check_interval connect_timeout total_timeout pause_enabled pause_disconnect_wan client_type diagnostics; do
+for option in enabled load_balancing passType check_interval connect_timeout total_timeout pause_enabled pause_disconnect_wan client_type diagnostics; do
 	printf 'config.%s=%s\n' "$option" "$(uci_value "feiyoung.general.$option")"
 done
 
@@ -146,8 +146,30 @@ configured_diagnostics=$(uci_value 'feiyoung.general.diagnostics')
 [ "$configured_diagnostics" = 1 ] && effective_diagnostics=1 || effective_diagnostics=0
 printf 'effective.client_type=%s\n' "$effective_client_type"
 printf 'effective.diagnostics=%s\n' "$effective_diagnostics"
+
+acct_idx=1
+for sec in $(uci -q show feiyoung 2>/dev/null | grep '=account' | cut -d. -f2 | cut -d= -f1); do
+	u=$(uci -q get "feiyoung.$sec.username" 2>/dev/null)
+	t=$(uci -q get "feiyoung.$sec.client_type" 2>/dev/null)
+	en=$(uci -q get "feiyoung.$sec.enabled" 2>/dev/null)
+	if [ -n "$u" ]; then
+		if [ ${#u} -ge 7 ]; then
+			u_mask="$(echo "$u" | cut -c 1-3)****$(echo "$u" | cut -c $((${#u} - 3))-${#u})"
+		else
+			u_mask="<masked>"
+		fi
+		printf 'account.%s.user=%s type=%s enabled=%s\n' "$acct_idx" "$u_mask" "${t:-pc}" "${en:-1}"
+		if [ -f "/tmp/feiyoung_cookie_${acct_idx}" ]; then
+			printf 'cookie.%s.exists=true\n' "$acct_idx"
+		else
+			printf 'cookie.%s.exists=false\n' "$acct_idx"
+		fi
+		acct_idx=$((acct_idx + 1))
+	fi
+done
+
 for mode in pc mobile; do
-	if [ -f "/tmp/feiyoung_cookie_$mode" ]; then
+	if [ -f "/tmp/feiyoung_cookie_$mode" ] || [ -f "/tmp/feiyoung_cookie_1" -a "$mode" = "pc" ] || [ -f "/tmp/feiyoung_cookie_2" -a "$mode" = "mobile" ]; then
 		printf 'cookie.%s.exists=true\n' "$mode"
 	else
 		printf 'cookie.%s.exists=false\n' "$mode"

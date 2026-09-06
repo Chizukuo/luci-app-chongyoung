@@ -91,8 +91,12 @@ return view.extend({
 			});
 		};
 
-		// 初始状态渲染与定期轮询
+		// 初始状态渲染与定期轮询 (切换离开当前页面时自动跳过 RPC)
 		poll.add(function() {
+			var container = document.getElementById('feiyoung_status_container');
+			if (!container) {
+				return;
+			}
 			return fs.read('/tmp/feiyoung_status').then(function(status) {
 				var el = document.getElementById('feiyoung_status_container');
 				if (el) {

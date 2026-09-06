@@ -111,7 +111,13 @@ curl() {
             -o) out_file="$2"; shift 2 ;;
             -A) ua="$2"; shift 2 ;;
             --interface) interface="$2"; shift 2 ;;
-            --data) data="$2"; shift 2 ;;
+            --data|--data-urlencode)
+                if [ -n "$data" ]; then
+                    data="${data}&${2}"
+                else
+                    data="$2"
+                fi
+                shift 2 ;;
             http://*|https://*) url="$1"; shift ;;
             *) shift ;;
         esac
@@ -166,7 +172,13 @@ curl() {
             -o) out_file="$2"; shift 2 ;;
             -A) ua="$2"; shift 2 ;;
             --interface) interface="$2"; shift 2 ;;
-            --data) data="$2"; shift 2 ;;
+            --data|--data-urlencode)
+                if [ -n "$data" ]; then
+                    data="${data}&${2}"
+                else
+                    data="$2"
+                fi
+                shift 2 ;;
             http://*|https://*) url="$1"; shift ;;
             *) shift ;;
         esac
@@ -218,5 +230,48 @@ keepalive_account 2
 wait $! 2>/dev/null || true
 assert_true "Mobile keepalive targeting mobile/logon.jsp" grep -q "/style/school_hbct/mobile/logon.jsp" "$trace_file"
 rm -f "/tmp/feiyoung_cookie_1" "/tmp/feiyoung_cookie_2"
+
+# 9. 特殊密码字符转义与 URL 编码测试 (含引号、美元符号、连接符)
+ACCT_3_USER="18912345678"
+ACCT_3_PASS='P@ss"w&o+r$d'
+ACCT_3_TYPE="pc"
+ACCT_3_DEV="wan"
+mock_stage="pc_success"
+curl() {
+    local dump_hdr="" out_file="" ua="" data="" url="" interface=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -D) dump_hdr="$2"; shift 2 ;;
+            -o) out_file="$2"; shift 2 ;;
+            -A) ua="$2"; shift 2 ;;
+            --interface) interface="$2"; shift 2 ;;
+            --data|--data-urlencode)
+                if [ -n "$data" ]; then data="${data}&${2}"; else data="$2"; fi; shift 2 ;;
+            http://*|https://*) url="$1"; shift ;;
+            *) shift ;;
+        esac
+    done
+    printf 'stage=%s method=%s url=%s dev=%s dump_hdr=%s data=%s\n' \
+        "$mock_stage" "$([ -n "$data" ] && echo POST || echo GET)" "$url" "$interface" "$dump_hdr" "$data" >> "$trace_file"
+    if [[ "$url" =~ (223.5.5.5|119.29.29.29|114.114.114.114) ]]; then
+        if [ "$dump_hdr" = "-" ] || [ -z "$dump_hdr" ]; then
+            printf 'HTTP/1.1 302 Found\r\nLocation: http://58.53.199.144:8001/style/school_hbct/pc/index.jsp?userip=100.64.42.36\r\n\r\n'
+        else
+            printf 'HTTP/1.1 302 Found\r\nLocation: http://58.53.199.144:8001/style/school_hbct/pc/index.jsp?userip=100.64.42.36\r\n\r\n' > "$dump_hdr"
+        fi
+        return 0
+    fi
+    if [[ "$url" =~ /style/school_hbct/pc/index.jsp ]]; then
+        printf '<html><frame src="/style/school_hbct/pc/index.jsp?paramStr=PC_SPECIAL_TOKEN"/></html>'
+        return 0
+    fi
+    if [[ "$url" =~ /page_auth.jsp ]]; then
+        printf 'HTTP/1.1 302 Found\r\nLocation: http://58.53.199.144:8001/style/school_hbct/pc/logon.jsp\r\n\r\n'
+        return 0
+    fi
+}
+: > "$trace_file"
+assert_true "Special character password login flow succeeds" login_account 3
+assert_true "trace recorded encoded special password" grep -q "PassWord=P@ss\"w&o+r\$d" "$trace_file"
 
 printf 'PASS: authentication flow, WAF bypass, status probing, and keepalive assertions=%d\n' "$assertions"

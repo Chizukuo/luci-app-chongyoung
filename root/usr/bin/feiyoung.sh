@@ -30,6 +30,11 @@ log() {
     logger -t feiyoung "$1"
 }
 
+# escape_sq: 对单引号进行标准 POSIX 转义以防 eval 注入与解析中断
+escape_sq() {
+    printf '%s' "$1" | sed "s/'/'\\\\''/g"
+}
+
 # mask_user: 掩码手机号以保护隐私 (如 18900001111 -> 189****1111)
 mask_user() {
     local u="$1"
@@ -67,11 +72,8 @@ get_lan_device() {
 generate_mac() {
     local b="$1"
     local idx="$2"
-    local b2=$(echo "$b" | cut -d: -f2)
-    local b3=$(echo "$b" | cut -d: -f3)
-    local b4=$(echo "$b" | cut -d: -f4)
-    local b5=$(echo "$b" | cut -d: -f5)
-    local b6=$(echo "$b" | cut -d: -f6)
+    local oIFS="$IFS"; IFS=":"; set -- $b; IFS="$oIFS"
+    local b2="$2" b3="$3" b4="$4" b5="$5" b6="$6"
     [ -z "$b6" ] && b6="00"
     local dec6=$((0x$b6))
     local new_dec6=$(( (dec6 + idx * 17) % 254 + 1 ))
@@ -303,6 +305,7 @@ check_pause_time() {
 
 # setup_dhcp_script: 创建用于虚拟网卡（vwan*）的专用轻量 DHCP 处理脚本（不污染主默认路由）
 setup_dhcp_script() {
+    [ -f /tmp/feiyoung_dhcp.sh ] && return 0
     cat << 'EOF' > /tmp/feiyoung_dhcp.sh
 #!/bin/sh
 [ -z "$1" ] && exit 1
@@ -316,7 +319,8 @@ case "$1" in
             ip route replace default via "$router" dev "$interface" table "$table_id" 2>/dev/null
             echo "$router" > "/tmp/feiyoung_gw_${interface}"
             echo "$ip" > "/tmp/feiyoung_ip_${interface}"
-            ip rule del table "$table_id" 2>/dev/null || true
+            ip rule del priority $((100 + vidx)) 2>/dev/null || true
+            ip rule del priority $((90 + vidx)) 2>/dev/null || true
             ip rule add priority $((100 + vidx)) from "$ip" lookup "$table_id" 2>/dev/null || true
             ip rule add priority $((90 + vidx)) oif "$interface" lookup "$table_id" 2>/dev/null || true
             ip route flush cache 2>/dev/null || true
@@ -374,11 +378,11 @@ get_config() {
             [ -z "$acct_t" ] && acct_t="pc"
 
             NUM_ACCTS=$((NUM_ACCTS + 1))
-            eval "ACCT_${NUM_ACCTS}_USER=\"\$acct_u\""
-            eval "ACCT_${NUM_ACCTS}_PASS=\"\$acct_p\""
-            eval "ACCT_${NUM_ACCTS}_TYPE=\"\$acct_t\""
-            eval "ACCT_${NUM_ACCTS}_MAC=\"\$acct_m\""
-            eval "ACCT_${NUM_ACCTS}_SEC=\"\$sec\""
+            eval "ACCT_${NUM_ACCTS}_USER='$(escape_sq "$acct_u")'"
+            eval "ACCT_${NUM_ACCTS}_PASS='$(escape_sq "$acct_p")'"
+            eval "ACCT_${NUM_ACCTS}_TYPE='$(escape_sq "$acct_t")'"
+            eval "ACCT_${NUM_ACCTS}_MAC='$(escape_sq "$acct_m")'"
+            eval "ACCT_${NUM_ACCTS}_SEC='$(escape_sq "$sec")'"
         done
     fi
 
@@ -438,7 +442,8 @@ setup_interfaces() {
                 local table_id=$((100 + vidx))
                 local cur_gw=$(get_dev_gw "$vif")
                 ip route replace default via "$cur_gw" dev "$vif" table "$table_id" 2>/dev/null
-                ip rule del table "$table_id" 2>/dev/null || true
+                ip rule del priority $((100 + vidx)) 2>/dev/null || true
+                ip rule del priority $((90 + vidx)) 2>/dev/null || true
                 ip rule add priority $((100 + vidx)) from "$cur_ip" lookup "$table_id" 2>/dev/null || true
                 ip rule add priority $((90 + vidx)) oif "$vif" lookup "$table_id" 2>/dev/null || true
             else
@@ -467,6 +472,11 @@ check_account_online() {
     if [ "$http_code" = "200" ] || [ "$http_code" = "204" ] || [ "$http_code" = "404" ]; then
         return 0
     fi
+    # 偶发网络抖动时进行备用探测，避免晚高峰单包丢包误判掉线
+    http_code=$(curl -s --interface "$dev" -A "$ua" --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" "http://119.29.29.29" 2>/dev/null)
+    if [ "$http_code" = "200" ] || [ "$http_code" = "204" ] || [ "$http_code" = "404" ]; then
+        return 0
+    fi
     return 1
 }
 
@@ -474,10 +484,10 @@ check_account_online() {
 login_account() {
     local idx="$1"
     local user pass type dev cookie_jar ua
-    eval "user=\"\$ACCT_${idx}_USER\""
-    eval "pass=\"\$ACCT_${idx}_PASS\""
-    eval "type=\"\$ACCT_${idx}_TYPE\""
-    eval "dev=\"\$ACCT_${idx}_DEV\""
+    eval "user=\${ACCT_${idx}_USER}"
+    eval "pass=\${ACCT_${idx}_PASS}"
+    eval "type=\${ACCT_${idx}_TYPE}"
+    eval "dev=\${ACCT_${idx}_DEV}"
     cookie_jar="/tmp/feiyoung_cookie_${idx}"
 
     if [ "$type" = "mobile" ]; then
@@ -538,21 +548,23 @@ login_account() {
         return 1
     fi
 
-    # 3. 提交登录 POST 请求
+    # 3. 提交登录 POST 请求 (采用 --data-urlencode 安全编码特殊密码字符)
     local resp post_loc
     resp=$(curl -s --interface "$dev" -A "$ua" --connect-timeout "$connect_timeout" --max-time "$total_timeout" \
-        -i -b "$cookie_jar" -c "$cookie_jar" -H "Content-Type: application/x-www-form-urlencoded" \
-        --data "UserType=1&paramStr=${param_str}&pwdType=${passType}&aidcauthtype=0&vfcodeflg=false&UserName=${user}&PassWord=${pass}" \
+        -i -b "$cookie_jar" -c "$cookie_jar" \
+        --data "UserType=1&paramStr=${param_str}&pwdType=${passType}&aidcauthtype=0&vfcodeflg=false" \
+        --data-urlencode "UserName=${user}" \
+        --data-urlencode "PassWord=${pass}" \
         "${portal_base}/page_auth.jsp" 2>/dev/null)
 
     post_loc=$(echo "$resp" | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
 
     if echo "$post_loc" | grep -q "logon.jsp"; then
-        log "会话 $idx 登录成功 (用户: $user, 类型: $type, 接口: $dev)"
+        log "会话 $idx 登录成功 (用户: $(mask_user "$user"), 类型: $type, 接口: $dev)"
         eval "LAST_KEEPALIVE_${idx}=$(date +%s)"
         return 0
     elif echo "$post_loc" | grep -q "login_fail.jsp"; then
-        log "会话 $idx 登录失败 (用户: $user, 类型: $type)"
+        log "会话 $idx 登录失败 (用户: $(mask_user "$user"), 类型: $type)"
         return 1
     else
         log "会话 $idx 登录响应未知: $post_loc"
@@ -584,6 +596,12 @@ keepalive_account() {
 # teardown_mwan_routing: 清理多拨聚合规则与路由
 teardown_mwan_routing() {
     nft delete table inet feiyoung_mwan 2>/dev/null || true
+    if nft list table inet fw4 >/dev/null 2>&1; then
+        local handle
+        for handle in $(nft -a list chain inet fw4 forward 2>/dev/null | grep 'comment "feiyoung_mwan"' | awk '{print $NF}'); do
+            nft delete rule inet fw4 forward handle "$handle" 2>/dev/null || true
+        done
+    fi
     local p
     for p in $(seq 90 110); do
         ip rule del priority $p 2>/dev/null || true
@@ -663,7 +681,7 @@ apply_mwan_routing() {
         k=$((k + 1))
     done
 
-    # 载入 RAM-only nftables 表：黏性会话跟踪 + MSS 钳制 + Masquerade
+    # 载入 RAM-only nftables 表：本地/私网直通 + 黏性会话跟踪 + MSS 钳制 + Masquerade
     nft delete table inet feiyoung_mwan 2>/dev/null || true
     nft -f - << EOF
 table inet feiyoung_mwan {
@@ -671,6 +689,8 @@ table inet feiyoung_mwan {
         type filter hook prerouting priority mangle; policy accept;
         iifname "$lan_dev" udp dport 53 accept
         iifname "$lan_dev" tcp dport 53 accept
+        iifname "$lan_dev" fib daddr type { local, broadcast, multicast } accept
+        iifname "$lan_dev" ip daddr { 127.0.0.0/8, 192.168.0.0/16 } accept
         iifname "$lan_dev" ct mark != 0x00000000 meta mark set ct mark
         iifname "$lan_dev" ct state new ct mark set numgen inc mod $num_online map { $map_rules }
         iifname "$lan_dev" ct state new meta mark set ct mark
@@ -687,6 +707,13 @@ table inet feiyoung_mwan {
     }
 }
 EOF
+
+    # 若系统运行 OpenWrt fw4，向 fw4 forward 链动态注入放行规则防止未知虚拟接口被拦截
+    if nft list table inet fw4 >/dev/null 2>&1; then
+        if ! nft list chain inet fw4 forward 2>/dev/null | grep -q 'comment "feiyoung_mwan"'; then
+            nft insert rule inet fw4 forward iifname "$lan_dev" oifname "vwan*" counter accept comment "feiyoung_mwan" 2>/dev/null || true
+        fi
+    fi
 
     ip route flush cache 2>/dev/null || true
     LAST_MWAN_STATE="$current_state"
@@ -838,9 +865,9 @@ main() {
         local i=1
         while [ $i -le $NUM_ACCTS ]; do
             local dev type user
-            eval "dev=\"\$ACCT_${i}_DEV\""
-            eval "type=\"\$ACCT_${i}_TYPE\""
-            eval "user=\"\$ACCT_${i}_USER\""
+            eval "dev=\${ACCT_${i}_DEV}"
+            eval "type=\${ACCT_${i}_TYPE}"
+            eval "user=\${ACCT_${i}_USER}"
 
             local is_online=0
             if check_account_online "$dev" "$type"; then
@@ -864,7 +891,7 @@ main() {
                 any_offline=1
                 eval "ACCT_${i}_STATUS=\"正在重连...\""
                 eval "ACCT_${i}_ONLINE=0"
-                log "检测到会话 $i ($user, $type, $dev) 离线，正在尝试认证..."
+                log "检测到会话 $i ($(mask_user "$user"), $type, $dev) 离线，正在尝试认证..."
 
                 if login_account "$i"; then
                     eval "ACCT_${i}_STATUS=\"在线\""

@@ -61,6 +61,7 @@ setup_dhcp_script
 assert_true "DHCP handler exists" test -x /tmp/feiyoung_dhcp.sh
 assert_true "DHCP handler contains table isolation" grep -q "table_id=\$((100 + vidx))" /tmp/feiyoung_dhcp.sh
 assert_true "DHCP handler contains oif policy rule" grep -q "oif \"\$interface\" lookup \"\$table_id\"" /tmp/feiyoung_dhcp.sh
+assert_true "DHCP handler cleans rules by priority" grep -q "ip rule del priority" /tmp/feiyoung_dhcp.sh
 rm -f /tmp/feiyoung_dhcp.sh
 
 # 4. 多拨聚合路由生成与 nftables 规则测试

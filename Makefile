@@ -15,7 +15,7 @@ define Package/luci-app-feiyoung
   SUBMENU:=3. Applications
   TITLE:=LuCI support for FeiYoung Campus Network
   PKGARCH:=all
-  DEPENDS:=+curl
+  DEPENDS:=+curl +kmod-macvlan
   PKG_CONFIG_DEPENDS:=CONFIG_PACKAGE_luci-app-feiyoung
 endef
 
