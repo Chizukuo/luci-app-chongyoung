@@ -407,9 +407,8 @@ check_pause_time() {
         return 1
     fi
 
-    local current_year=$(date +%Y)
-    # 若年份小于 2024 且未经验证，判定为 1970 等未授时状态，避免误判休眠
-    [ "$current_year" -lt 2024 ] && [ ! -f /tmp/feiyoung_time_verified ] && return 1
+    # 未完成 NTP/HTTP 授时前，系统时钟不可靠（无 RTC 硬件时易被 sysfixtime 误还原为历史时间），禁止休眠避免断网死锁
+    [ -f /tmp/feiyoung_time_verified ] || return 1
 
     current_time=$(date +%H%M)
     start_time=$(echo "$pause_start" | tr -d ':')
@@ -432,7 +431,6 @@ check_pause_time() {
 main() {
     get_config
 
-    rm -f /tmp/feiyoung_time_verified
     local portal_fail_count=0
 
     while true; do
