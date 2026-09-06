@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 项目使用文档 (Documentation)
+    url: https://github.com/Chizukuo/luci-app-feiyoung#readme
+    about: 在提问或反馈之前，请先查阅项目完整说明与配置指南
+  - name: 🤝 开发者贡献指南 (Contributing Guide)
+    url: https://github.com/Chizukuo/luci-app-feiyoung/blob/main/CONTRIBUTING.md
+    about: 了解项目的架构边界、代码规范与本地自动化测试流水线

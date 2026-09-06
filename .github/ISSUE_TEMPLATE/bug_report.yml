@@ -1,0 +1,59 @@
+name: 🐛 Bug 报告 (Bug Report)
+description: 提交在使用 luci-app-feiyoung 过程中遇到的认证失败、崩溃或网络异常问题
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈问题！请尽量详尽填写以下信息，以帮助开发者迅速定位和复现故障。
+        **注意：粘贴日志前请确认密码等敏感凭据已被脱敏。**
+  - type: input
+    id: version
+    attributes:
+      label: 插件版本 (Plugin Version)
+      description: 当前安装的 luci-app-feiyoung 版本（如 v2.2.0）
+      placeholder: "v2.2.0"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 路由器硬件与固件版本 (Environment)
+      description: 路由器型号、CPU 架构与 OpenWrt/ImmortalWrt 固件版本
+      placeholder: "小米 AC2100 (MT7621) / ImmortalWrt 25.12.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: auth_mode
+    attributes:
+      label: 会话配置模式 (Auth Mode)
+      description: 你在 Web 后台配置的会话类型
+      options:
+        - "单会话 PC Client 模式"
+        - "单会话 Mobile Client 模式"
+        - "同一账号 PC + Mobile 并发双拨"
+        - "多账号多拨聚合"
+    validations:
+      required: true
+  - type: textarea
+    id: bug_description
+    attributes:
+      label: 异常现象描述 (Problem Description)
+      description: 清晰扼要地说明遇到了什么问题，与预期表现有何不同
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 运行日志 (Logread Output)
+      description: |
+        请在终端执行 `logread -e feiyoung | tail -n 50` 并将输出完整粘贴在此处。
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: 其他上下文或截图 (Additional Context)
+      description: 包含学校校区节点特征、是否启用多拨聚合等补充信息
