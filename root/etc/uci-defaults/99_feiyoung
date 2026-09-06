@@ -51,7 +51,7 @@ chmod +x /usr/bin/feiyoung.sh 2>/dev/null
 [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload 2>/dev/null
 
 # 将 Feiyoung 自定义回调脚本加入 sysupgrade 备份列表以防刷机/升级丢失
-if [ -f /etc/sysupgrade.conf ] && ! grep -q "/etc/feiyoung.user" /etc/sysupgrade.conf; then
+if [ -f /etc/sysupgrade.conf ] && ! grep -q -F "/etc/feiyoung.user" /etc/sysupgrade.conf; then
     echo "/etc/feiyoung.user" >> /etc/sysupgrade.conf
 fi
 

@@ -104,8 +104,8 @@ return view.extend({
 		o.datatype = 'string';
 		o.password = true;
 		o.validate = function(section_id, value) {
-			if (value && value.length !== 6) {
-				return _('Password must be 6 characters long');
+			if (value && value.length < 6) {
+				return _('Password must be at least 6 characters long');
 			}
 			return true;
 		};
@@ -169,7 +169,7 @@ return view.extend({
 				E('span', {}, _('Project hosted on ')),
 				E('a', { 'href': 'https://github.com/Chizukuo/luci-app-feiyoung', 'target': '_blank', 'style': 'color: #0069b4; text-decoration: none; font-weight: bold;' }, 'GitHub'),
 				E('span', {}, ' | '),
-				E('span', {}, 'v2.1.2')
+				E('span', {}, 'v2.1.3')
 			]);
 			nodes.appendChild(footer);
 			return nodes;
