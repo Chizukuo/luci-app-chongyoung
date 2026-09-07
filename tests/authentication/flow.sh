@@ -49,6 +49,7 @@ assert_false() {
 }
 
 # 1. 提取被测生产函数 (直接从 root/usr/bin/feiyoung.sh 提取)
+source <(sed -n '/^escape_sq() {/,/^}/p' "$src")
 source <(sed -n '/^mask_user() {/,/^}/p' "$src")
 source <(sed -n '/^get_base() {/,/^}/p' "$src")
 source <(sed -n '/^check_account_online() {/,/^}/p' "$src")

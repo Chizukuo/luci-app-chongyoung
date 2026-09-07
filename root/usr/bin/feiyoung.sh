@@ -119,40 +119,100 @@ ensure_default_route() {
     fi
 }
 
-# check_gateway_alive: 检查主 WAN 口网关二层连通性
+# check_gateway_alive: 检查指定网卡网关二层连通性
 check_gateway_alive() {
-    local wan_up=$(ifstatus wan 2>/dev/null | sed -n 's/.*"up": *\([a-z]*\).*/\1/p' | head -1)
-    [ "$wan_up" != "true" ] && return 0
-    local gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
+    local dev="${1:-}"
+    [ -z "$dev" ] && dev=$(get_wan_device)
+    local gw
+    if [ "$dev" = "$(get_wan_device)" ] || [ "$dev" = "wan" ]; then
+        local wan_up=$(ifstatus wan 2>/dev/null | sed -n 's/.*"up": *\([a-z]*\).*/\1/p' | head -1)
+        [ "$wan_up" != "true" ] && return 0
+        gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
+    else
+        gw=$(get_dev_gw "$dev")
+    fi
     [ -z "$gw" ] && return 0
 
-    local dev=$(get_wan_device)
     if ip neigh show dev "$dev" 2>/dev/null | grep -E "^$gw " | grep -q -E "INCOMPLETE|FAILED"; then
         return 1
     fi
     return 0
 }
 
-# renew_wan: 重置主 WAN 接口并重新请求 DHCP（带 60s 冷却保护）
-renew_wan() {
+# cleanup_virtual_interfaces: 清理所有虚拟网卡与其后台 udhcpc 进程
+cleanup_virtual_interfaces() {
+    local pidfile
+    for pidfile in /var/run/udhcpc-vwan*.pid; do
+        if [ -f "$pidfile" ]; then
+            kill $(cat "$pidfile") 2>/dev/null || true
+            rm -f "$pidfile"
+        fi
+    done
+
+    local d
+    for d in /sys/class/net/vwan*; do
+        [ -d "$d" ] && ip link delete "${d##*/}" 2>/dev/null || true
+    done
+
+    rm -f /tmp/feiyoung_ip_vwan* /tmp/feiyoung_gw_vwan*
+}
+
+# renew_interface: 重置指定网络接口并重新请求 DHCP（支持主 WAN 与虚拟网卡，带 60s 冷却保护与上游防刷）
+renew_interface() {
+    local dev="$1"
+    local wan_dev=$(get_wan_device)
+    local dev_safe=$(echo "$dev" | tr -c 'a-zA-Z0-9_' '_')
     local now=$(date +%s)
-    if [ $((now - last_renew_time)) -lt 60 ]; then
-        log "WAN 口处于 60s 冷却保护中，跳过重置..."
+    local last_renew
+    eval "last_renew=\${LAST_RENEW_${dev_safe}:-0}"
+
+    if [ $((now - last_renew)) -lt 60 ]; then
+        log "接口 $dev 处于 60s 冷却保护中，跳过重置..."
         return 0
     fi
-    last_renew_time=$now
+    eval "LAST_RENEW_${dev_safe}=$now"
 
-    log "检测到上游网关不通或租约失效，正在重置 WAN 口 DHCP..."
-    ifup wan >/dev/null 2>&1
-    local count=0
-    while [ $count -lt 8 ]; do
-        sleep 1 &
-        wait $!
-        local gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
-        [ -n "$gw" ] && break
-        count=$((count + 1))
-    done
-    ensure_default_route
+    if [ "$dev" = "$wan_dev" ] || [ "$dev" = "wan" ]; then
+        last_renew_time=$now
+        log "检测到主 WAN 网关不通或租约失效，正在重置 WAN 口 DHCP..."
+        ifup wan >/dev/null 2>&1
+        local count=0
+        while [ $count -lt 8 ]; do
+            sleep 1 &
+            wait $!
+            local gw=$(ifstatus wan 2>/dev/null | sed -n 's/.*"nexthop": *"\([^"]*\)".*/\1/p' | head -1)
+            [ -n "$gw" ] && break
+            count=$((count + 1))
+        done
+        ensure_default_route
+    else
+        log "检测到虚拟网卡 $dev 租约失效或未响应，正在重置 DHCP..."
+        local pidfile="/var/run/udhcpc-$dev.pid"
+        if [ -f "$pidfile" ]; then
+            kill $(cat "$pidfile") 2>/dev/null || true
+            rm -f "$pidfile"
+        fi
+        ip -4 addr flush dev "$dev" 2>/dev/null || true
+        rm -f "/tmp/feiyoung_ip_${dev}" "/tmp/feiyoung_gw_${dev}"
+
+        setup_dhcp_script
+        udhcpc -i "$dev" -s /tmp/feiyoung_dhcp.sh -p "$pidfile" -t 3 -T 2 -b -R >/dev/null 2>&1 &
+
+        local count=0
+        while [ $count -lt 8 ]; do
+            sleep 1 &
+            wait $!
+            local cur_ip=$(get_dev_ip "$dev")
+            [ -n "$cur_ip" ] && break
+            count=$((count + 1))
+        done
+    fi
+}
+
+# renew_wan: 重置主 WAN 接口并重新请求 DHCP（兼容调用）
+renew_wan() {
+    local dev=$(get_wan_device)
+    renew_interface "$dev"
 }
 
 # get_5g_radios: 获取 5G 无线设备名称
@@ -241,12 +301,42 @@ enable_lan_ports() {
     fi
 }
 
-# sync_ntp: NTP 同步
+# sync_ntp: NTP 同步（支持 ntpd / ntpclient / sntp 三级回退）
 sync_ntp() {
     local server="$1"
     local rc=1
     if command -v ntpd >/dev/null; then
         ntpd -q -n -p "$server" >/dev/null 2>&1 &
+        local pid=$!
+        local count=0
+        while [ $count -lt 5 ]; do
+            if ! kill -0 $pid 2>/dev/null; then
+                wait $pid; rc=$?; break
+            fi
+            sleep 1; count=$((count + 1))
+        done
+        if kill -0 $pid 2>/dev/null; then
+            kill -9 $pid 2>/dev/null; wait $pid 2>/dev/null; rc=1
+        fi
+        [ $rc -eq 0 ] && return 0
+    fi
+    if command -v ntpclient >/dev/null; then
+        ntpclient -s -h "$server" >/dev/null 2>&1 &
+        local pid=$!
+        local count=0
+        while [ $count -lt 5 ]; do
+            if ! kill -0 $pid 2>/dev/null; then
+                wait $pid; rc=$?; break
+            fi
+            sleep 1; count=$((count + 1))
+        done
+        if kill -0 $pid 2>/dev/null; then
+            kill -9 $pid 2>/dev/null; wait $pid 2>/dev/null; rc=1
+        fi
+        [ $rc -eq 0 ] && return 0
+    fi
+    if command -v sntp >/dev/null; then
+        sntp -s "$server" >/dev/null 2>&1 &
         local pid=$!
         local count=0
         while [ $count -lt 5 ]; do
@@ -490,6 +580,30 @@ login_account() {
     eval "dev=\${ACCT_${idx}_DEV}"
     cookie_jar="/tmp/feiyoung_cookie_${idx}"
 
+    if [ -z "$dev" ] || [ -z "$user" ] || [ -z "$pass" ]; then
+        log "会话 $idx 配置不完整，跳过认证"
+        return 1
+    fi
+
+    # 检查网卡是否已取得 IP 地址
+    if command -v get_dev_ip >/dev/null; then
+        local cur_ip=$(get_dev_ip "$dev")
+        if [ -z "$cur_ip" ]; then
+            log "会话 $idx ($dev) 尚未取得有效 IP，正在尝试刷新 DHCP..."
+            command -v renew_interface >/dev/null && renew_interface "$dev"
+            return 1
+        fi
+    fi
+
+    # 检查二层网关连通性
+    if command -v check_gateway_alive >/dev/null; then
+        if ! check_gateway_alive "$dev"; then
+            log "会话 $idx ($dev) 上游网关 ARP 异常或未连通，正在重置..."
+            command -v renew_interface >/dev/null && renew_interface "$dev"
+            return 1
+        fi
+    fi
+
     if [ "$type" = "mobile" ]; then
         ua="$UA_MOBILE"
     else
@@ -502,14 +616,43 @@ login_account() {
     for site in "http://223.5.5.5" "http://119.29.29.29" "http://114.114.114.114"; do
         loc=$(curl -s --interface "$dev" -A "$ua" --connect-timeout 2 --max-time 3 -D - -o /dev/null "$site" 2>/dev/null \
             | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
-        if [ -n "$loc" ] && echo "$loc" | grep -qi "userip="; then
+        if [ -n "$loc" ] && echo "$loc" | grep -qi -E "userip=|paramStr="; then
             portal_url="$loc"
             break
         fi
     done
 
+    # 纯 IP 探测未发现重定向时，尝试 NCSI 域名探针（通过 DHCP DNS 解析，绕过 DoH）
     if [ -z "$portal_url" ]; then
-        log "会话 $idx ($dev) 未能探测到认证门户重定向"
+        local dns_server=""
+        [ -f /tmp/resolv.conf.d/resolv.conf.auto ] && dns_server=$(awk '/^nameserver/ {print $2; exit}' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null)
+        [ -z "$dns_server" ] && [ -f /tmp/resolv.conf.auto ] && dns_server=$(awk '/^nameserver/ {print $2; exit}' /tmp/resolv.conf.auto 2>/dev/null)
+        [ -z "$dns_server" ] && dns_server="202.103.44.150"
+
+        local host ip
+        for site in "www.msftconnecttest.com/connecttest.txt" "connectivitycheck.gstatic.com/generate_204"; do
+            host="${site%%/*}"
+            ip=$(nslookup "$host" "$dns_server" 2>/dev/null | awk '/^Address:/ {print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+            [ -z "$ip" ] && continue
+            loc=$(curl -s --interface "$dev" --connect-timeout 2 --max-time 3 -A "$ua" -H "Host: $host" -D - -o /dev/null "http://${ip}/${site#*/}" 2>/dev/null \
+                | grep -i '^Location:' | head -1 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
+            if [ -n "$loc" ] && echo "$loc" | grep -qi -E "userip=|paramStr="; then
+                portal_url="$loc"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$portal_url" ]; then
+        eval "FAIL_COUNT_${idx}=\$(( \${FAIL_COUNT_${idx}:-0} + 1 ))"
+        local fail_count
+        eval "fail_count=\"\$FAIL_COUNT_${idx}\""
+        log "会话 $idx ($dev) 未能探测到认证门户重定向 (连续失败: $fail_count 次)"
+        if [ "$fail_count" -ge 2 ]; then
+            log "会话 $idx ($dev) 连续 $fail_count 次未能探测到门户，判定 DHCP 租约失效，正在刷新租约..."
+            command -v renew_interface >/dev/null && renew_interface "$dev"
+            eval "FAIL_COUNT_${idx}=0"
+        fi
         return 1
     fi
 
@@ -544,7 +687,15 @@ login_account() {
     fi
 
     if [ -z "$param_str" ]; then
-        log "会话 $idx ($dev) 解析 paramStr 失败 (type: $type)"
+        eval "FAIL_COUNT_${idx}=\$(( \${FAIL_COUNT_${idx}:-0} + 1 ))"
+        local fail_count
+        eval "fail_count=\"\$FAIL_COUNT_${idx}\""
+        log "会话 $idx ($dev) 解析 paramStr 失败 (type: $type, 连续失败: $fail_count 次)"
+        if [ "$fail_count" -ge 2 ]; then
+            log "会话 $idx ($dev) 连续 $fail_count 次解析失败，判定会话异常，正在刷新租约..."
+            command -v renew_interface >/dev/null && renew_interface "$dev"
+            eval "FAIL_COUNT_${idx}=0"
+        fi
         return 1
     fi
 
@@ -562,12 +713,16 @@ login_account() {
     if echo "$post_loc" | grep -q "logon.jsp"; then
         log "会话 $idx 登录成功 (用户: $(mask_user "$user"), 类型: $type, 接口: $dev)"
         eval "LAST_KEEPALIVE_${idx}=$(date +%s)"
+        eval "FAIL_COUNT_${idx}=0"
+        eval "ACCT_${idx}_PORTAL_BASE='$(escape_sq "$portal_base")'"
         return 0
     elif echo "$post_loc" | grep -q "login_fail.jsp"; then
         log "会话 $idx 登录失败 (用户: $(mask_user "$user"), 类型: $type)"
+        rm -f "$cookie_jar"
         return 1
     else
         log "会话 $idx 登录响应未知: $post_loc"
+        rm -f "$cookie_jar"
         return 1
     fi
 }
@@ -582,14 +737,18 @@ keepalive_account() {
 
     [ ! -f "$cookie_jar" ] && return 0
 
+    local keepalive_base
+    eval "keepalive_base=\"\$ACCT_${idx}_PORTAL_BASE\""
+    [ -z "$keepalive_base" ] && keepalive_base="$gateway"
+
     if [ "$type" = "mobile" ]; then
         ua="$UA_MOBILE"
         curl --interface "$dev" -s --connect-timeout 3 --max-time 5 -A "$ua" -b "$cookie_jar" \
-            "${gateway}/style/school_hbct/mobile/logon.jsp" >/dev/null 2>&1 &
+            "${keepalive_base}/style/school_hbct/mobile/logon.jsp" >/dev/null 2>&1 &
     else
         ua="$UA_PC"
         curl --interface "$dev" -s --connect-timeout 3 --max-time 5 -A "$ua" -b "$cookie_jar" \
-            "${gateway}/style/school_hbct/pc/logon.jsp" >/dev/null 2>&1 &
+            "${keepalive_base}/style/school_hbct/pc/logon.jsp" >/dev/null 2>&1 &
     fi
 }
 
@@ -752,18 +911,7 @@ cleanup() {
     teardown_mwan_routing
     
     # 清理虚拟网卡与其后台 udhcpc 进程
-    local pidfile
-    for pidfile in /var/run/udhcpc-vwan*.pid; do
-        if [ -f "$pidfile" ]; then
-            kill $(cat "$pidfile") 2>/dev/null || true
-            rm -f "$pidfile"
-        fi
-    done
-    
-    local d
-    for d in /sys/class/net/vwan*; do
-        [ -d "$d" ] && ip link delete "${d##*/}" 2>/dev/null || true
-    done
+    cleanup_virtual_interfaces
     
     rm -f /tmp/feiyoung_online /tmp/feiyoung_cookie_* /tmp/feiyoung_dhcp.sh /tmp/feiyoung_ip_* /tmp/feiyoung_gw_*
     
@@ -822,6 +970,7 @@ main() {
                 if [ ! -f /tmp/feiyoung_wan_paused ]; then
                     log "进入休眠时间，断开网络接口..."
                     ifdown wan
+                    cleanup_virtual_interfaces
                     disable_5g
                     disable_lan_ports
                     touch /tmp/feiyoung_wan_paused
@@ -877,6 +1026,7 @@ main() {
             if [ "$is_online" = "1" ]; then
                 eval "ACCT_${i}_STATUS=\"在线\""
                 eval "ACCT_${i}_ONLINE=1"
+                eval "FAIL_COUNT_${i}=0"
                 online_count=$((online_count + 1))
                 online_dev_list="${online_dev_list} ${dev}"
 

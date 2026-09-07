@@ -128,10 +128,13 @@ enable_5g
 assert_eq "$(cat "$wifi_trace")" $'down radio1\nup radio1' 'recorded radio restored'
 assert_false test -e "$test_root/disabled_radios"
 
+source <(sed -n '/^cleanup_virtual_interfaces() {/,/^}/p' "$src")
+source <(sed -n '/^renew_interface() {/,/^}/p' "$src")
 source <(sed -n '/^cleanup() {/,/^}/p' "$src")
 # Keep cleanup's logger fully local even if a sourced function changes the shell scope.
 log() { :; }
 teardown_mwan_routing() { :; }
+setup_dhcp_script() { :; }
 touch "$test_root/status" "$test_root/online" "$test_root/wan_paused"
 ip() { :; }
 ifup() { :; }
@@ -139,5 +142,13 @@ cleanup
 assert_false test -e "$test_root/status"
 assert_false test -e "$test_root/online"
 assert_false test -e "$test_root/wan_paused"
+
+# 验证 renew_interface 的 60 秒冷却锁保护机制
+renew_wan_calls=0
+ifup() { renew_wan_calls=$((renew_wan_calls + 1)); }
+renew_interface "wan"
+assert_eq "1" "$renew_wan_calls" "first renew_interface triggers ifup"
+renew_interface "wan"
+assert_eq "1" "$renew_wan_calls" "second renew_interface within 60s is blocked by cooldown lock"
 
 printf 'PASS: upstream sync network, pause-time, radio, cleanup assertions=%d\n' "$assertions"
