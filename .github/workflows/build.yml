@@ -24,6 +24,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      target_tag:
+        description: '目标 Release Tag (默认 pre-release 滚动构建；也可指定如 2.2.0)'
+        required: false
+        default: 'pre-release'
 
 permissions:
   contents: write
@@ -126,12 +131,25 @@ jobs:
           name: luci-app-feiyoung-${{ matrix.pkg_ext }}
           path: luci-app-feiyoung*.${{ matrix.pkg_ext }}
 
-      - name: Upload to Release
-        if: github.event_name == 'release'
+      - name: Upload to Pre-Release (Rolling main build)
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && (inputs.target_tag == '' || inputs.target_tag == 'pre-release'))
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: luci-app-feiyoung*.${{ matrix.pkg_ext }}
-          tag: ${{ github.ref }}
+          tag: pre-release
+          release_name: "Pre-release 滚动构建"
+          body: "自动滚动的预发布版本（基于 `main` 分支最新代码持续构建）。包含最新的修复与功能体验。"
+          prerelease: true
+          overwrite: true
+          file_glob: true
+
+      - name: Upload to Release (Formal Release or Custom Tag)
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target_tag != '' && inputs.target_tag != 'pre-release')
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: luci-app-feiyoung*.${{ matrix.pkg_ext }}
+          tag: ${{ github.event_name == 'release' && github.ref || inputs.target_tag }}
           overwrite: true
           file_glob: true
